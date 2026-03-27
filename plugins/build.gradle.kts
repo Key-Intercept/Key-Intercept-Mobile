@@ -4,8 +4,8 @@ import com.android.build.gradle.LibraryExtension
 import org.jetbrains.kotlin.gradle.dsl.KotlinAndroidExtension
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
-val projectNamespace = "com.github.yourname"
-val repositoryUrl = "https://github.com/Owner/Name"
+val projectNamespace = "com.github.supersliser"
+val repositoryUrl = "https://github.com/Key-Intercept/key-intercept-mobile"
 
 subprojects {
     apply(plugin = "com.aliucord.plugin")
@@ -13,7 +13,7 @@ subprojects {
     apply(plugin = "org.jetbrains.kotlin.android")
 
     configure<AliucordExtension> {
-        github(repositoryUrl)
+        github("Key-Intercept/Key-Intercept-Mobile")
     }
 
     configure<LibraryExtension> {
