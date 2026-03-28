@@ -12,6 +12,9 @@ import java.util.IdentityHashMap
 
 @AliucordPlugin(requiresRestart = false)
 class KeyIntercept : Plugin() {
+    private var didLogEnqueueShape = false
+    private var didLogDoSendShape = false
+
     override fun start(context: Context) {
         val targetMethods = MessageQueue::class.java.declaredMethods.filter {
             it.name == "doSend" || it.name == "sendMessage" || it.name == "enqueue"
@@ -29,6 +32,16 @@ class KeyIntercept : Plugin() {
                 var changed = false
                 val visited = Collections.newSetFromMap(IdentityHashMap<Any, Boolean>())
                 val stringArgIndexes = mutableListOf<Int>()
+
+                if (method.name == "enqueue" && !didLogEnqueueShape) {
+                    didLogEnqueueShape = true
+                    logger.info("enqueue arg shapes: ${hookParam.args.joinToString { describeValueShape(it) }}")
+                }
+
+                if (method.name == "doSend" && !didLogDoSendShape) {
+                    didLogDoSendShape = true
+                    logger.info("doSend arg shapes: ${hookParam.args.joinToString { describeValueShape(it) }}")
+                }
 
                 hookParam.args.forEachIndexed { index, arg ->
                     if (arg is String) {
@@ -88,7 +101,19 @@ class KeyIntercept : Plugin() {
 
         if (target is Map<*, *>) {
             var changed = false
-            target.values.forEach { value ->
+            val mutable = target as? MutableMap<Any?, Any?>
+            target.forEach { (key, value) ->
+                val keyName = (key as? String)?.lowercase()
+                if (keyName != null && value is String && isMessageFieldName(keyName)) {
+                    val updated = appendMarker(value)
+                    if (updated != value) {
+                        mutable?.set(key, updated)
+                        changed = true
+                        logger.info("Mutated map entry key=$key")
+                    }
+                    return@forEach
+                }
+
                 if (value != null && mutateMessageLikeFields(value, visited, depth + 1)) {
                     changed = true
                 }
@@ -163,6 +188,29 @@ class KeyIntercept : Plugin() {
         }
 
         return value.any { it.isLetter() || it.isWhitespace() }
+    }
+
+    private fun isMessageFieldName(fieldName: String): Boolean {
+        return fieldName.contains("content") ||
+            fieldName.contains("message") ||
+            fieldName.contains("text") ||
+            fieldName.contains("body")
+    }
+
+    private fun describeValueShape(value: Any?): String {
+        if (value == null) return "null"
+        return when (value) {
+            is String -> "String(len=${value.length})"
+            is Map<*, *> -> "${value.javaClass.simpleName}(size=${value.size})"
+            is Iterable<*> -> "${value.javaClass.simpleName}(iterable)"
+            else -> {
+                val fields = value.javaClass.declaredFields
+                    .filterNot { Modifier.isStatic(it.modifiers) }
+                    .take(8)
+                    .joinToString { it.name + ":" + it.type.simpleName }
+                "${value.javaClass.simpleName}{$fields}"
+            }
+        }
     }
 
     override fun stop(context: Context) {
