@@ -28,13 +28,18 @@ class KeyIntercept : Plugin() {
             patcher.patch(method, Hook { hookParam: XC_MethodHook.MethodHookParam ->
                 var changed = false
                 val visited = Collections.newSetFromMap(IdentityHashMap<Any, Boolean>())
+                var consumedDirectStringMutation = false
 
                 hookParam.args.forEachIndexed { index, arg ->
                     if (arg is String) {
-                        val updated = appendMarker(arg)
-                        if (updated != arg) {
-                            hookParam.args[index] = updated
-                            changed = true
+                        // Only mutate one message-like String argument per send call.
+                        if (!consumedDirectStringMutation && isLikelyMessageContent(arg)) {
+                            val updated = appendMarker(arg)
+                            if (updated != arg) {
+                                hookParam.args[index] = updated
+                                changed = true
+                                consumedDirectStringMutation = true
+                            }
                         }
                         return@forEachIndexed
                     }
@@ -57,6 +62,38 @@ class KeyIntercept : Plugin() {
     private fun mutateMessageLikeFields(target: Any, visited: MutableSet<Any>, depth: Int): Boolean {
         if (depth > 5 || !visited.add(target)) return false
 
+        if (target.javaClass.isArray) {
+            var changed = false
+            val size = java.lang.reflect.Array.getLength(target)
+            for (i in 0 until size) {
+                val element = java.lang.reflect.Array.get(target, i)
+                if (element != null && mutateMessageLikeFields(element, visited, depth + 1)) {
+                    changed = true
+                }
+            }
+            return changed
+        }
+
+        if (target is Iterable<*>) {
+            var changed = false
+            target.forEach { element ->
+                if (element != null && mutateMessageLikeFields(element, visited, depth + 1)) {
+                    changed = true
+                }
+            }
+            return changed
+        }
+
+        if (target is Map<*, *>) {
+            var changed = false
+            target.values.forEach { value ->
+                if (value != null && mutateMessageLikeFields(value, visited, depth + 1)) {
+                    changed = true
+                }
+            }
+            return changed
+        }
+
         var changed = false
         val fieldNameHints = setOf("content", "message", "text", "body")
         var currentClass: Class<*>? = target.javaClass
@@ -70,7 +107,8 @@ class KeyIntercept : Plugin() {
                     val value = field.get(target) ?: return@runCatching
 
                     if (value is String) {
-                        val shouldMutate = fieldNameHints.contains(field.name)
+                        val fieldName = field.name.lowercase()
+                        val shouldMutate = fieldNameHints.any { fieldName.contains(it) } && isLikelyMessageContent(value)
                         if (!shouldMutate) return@runCatching
                         val updated = appendMarker(value)
                         if (updated != value) {
@@ -93,6 +131,16 @@ class KeyIntercept : Plugin() {
         }
 
         return changed
+    }
+
+    private fun isLikelyMessageContent(value: String): Boolean {
+        if (value.isBlank()) return false
+        if (value.length > 4000) return false
+        if (value.length in 16..64 && value.all { it.isDigit() || (it in 'a'..'f') || (it in 'A'..'F') || it == '-' || it == '_' }) {
+            return false
+        }
+
+        return value.any { it.isLetter() || it.isWhitespace() }
     }
 
     override fun stop(context: Context) {

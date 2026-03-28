@@ -1,8 +1,12 @@
-version = "4.0.1" // Plugin version. Increment this to trigger the updater
+version = "4.0.2" // Plugin version. Increment this to trigger the updater
 description = "Key Intercept"
 
 aliucord {
     changelog = """
+        # 4.0.2
+        * Fix one-send issue by only mutating message-like strings
+        * Traverse arrays/collections/maps to reach nested send payloads
+
         # 4.0.1
         * Improve send interception to mutate final outgoing payload
 
