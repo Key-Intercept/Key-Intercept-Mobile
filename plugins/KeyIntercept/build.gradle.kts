@@ -1,8 +1,12 @@
-version = "4.0.4" // Plugin version. Increment this to trigger the updater
+version = "4.0.5" // Plugin version. Increment this to trigger the updater
 description = "Key Intercept"
 
 aliucord {
     changelog = """
+        # 4.0.5
+        * Target Send.message.content directly in enqueue/doSend hooks
+        * Wrap Send.onPreprocessing to keep content modified through preprocessing
+
         # 4.0.4
         * Add map payload key mutation (content/message/text/body)
         * Add one-time enqueue/doSend payload shape logs for precise runtime targeting
