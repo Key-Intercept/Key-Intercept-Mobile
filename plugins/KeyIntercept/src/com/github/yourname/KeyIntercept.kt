@@ -11,10 +11,18 @@ import java.util.IdentityHashMap
 
 @AliucordPlugin(requiresRestart = false)
 class KeyIntercept : Plugin() {
+    private companion object {
+        const val CONTENT_FIELD = "content"
+        const val MESSAGE_FIELD = "message"
+        const val PREPROCESSING_FIELD = "onPreprocessing"
+        const val MARKER_SUFFIX = " [Modified by KeyIntercept]"
+    }
+
     private val wrappedCallbacks = Collections.newSetFromMap(IdentityHashMap<Any, Boolean>())
 
     override fun start(context: Context) {
-        val targetMethods = MessageQueue::class.java.declaredMethods.filter { it.name == "doSend" || it.name == "enqueue" }
+        val targetMethods = MessageQueue::class.java.declaredMethods
+            .filter { it.name == "doSend" || it.name == "enqueue" }
 
         if (targetMethods.isEmpty()) {
             logger.warn("Could not find MessageQueue send methods to patch")
@@ -25,68 +33,63 @@ class KeyIntercept : Plugin() {
 
         targetMethods.forEach { method ->
             patcher.patch(method, Hook { hookParam: XC_MethodHook.MethodHookParam ->
-                var changed = false
-                hookParam.args.forEach { arg ->
-                    if (arg != null && mutateSendPayload(arg)) {
-                        changed = true
-                    }
-                }
+                val changed = hookParam.args.any { arg -> arg != null && mutateOutgoingData(arg) }
 
                 if (changed) logger.info("Modified outgoing message in MessageQueue.${method.name}")
             })
         }
     }
 
-    private fun appendMarker(content: String): String {
-        val marker = " [Modified by KeyIntercept]"
-        return if (content.endsWith(marker)) content else "$content$marker"
-    }
-
-    private fun mutateSendPayload(target: Any): Boolean {
+    private fun mutateOutgoingData(candidate: Any): Boolean {
         var changed = false
 
-        if (wrapOnPreprocessing(target)) {
+        if (wrapPreprocessingCallback(candidate)) {
             changed = true
         }
 
-        val nestedMessage = getFieldValue(target, "message")
+        val nestedMessage = getFieldValue(candidate, MESSAGE_FIELD)
         if (nestedMessage != null && mutateContentField(nestedMessage, "Message")) {
             changed = true
         }
 
-        if (mutateContentField(target, target.javaClass.simpleName)) {
+        if (mutateContentField(candidate, candidate.javaClass.simpleName)) {
             changed = true
         }
 
         return changed
     }
 
+    private fun alterMessage(content: String): String {
+        return if (content.endsWith(MARKER_SUFFIX)) content else "$content$MARKER_SUFFIX"
+    }
+
     private fun mutateContentField(target: Any, sourceName: String): Boolean {
-        val content = getFieldValue(target, "content") as? String ?: return false
-        val updated = appendMarker(content)
+        val content = getFieldValue(target, CONTENT_FIELD) as? String ?: return false
+        val updated = alterMessage(content)
         if (updated == content) return false
-        return setFieldValue(target, "content", updated).also { success ->
+        return setFieldValue(target, CONTENT_FIELD, updated).also { success ->
             if (success) logger.info("Mutated $sourceName.content")
         }
     }
 
-    private fun wrapOnPreprocessing(target: Any): Boolean {
-        val callback = getFieldValue(target, "onPreprocessing") as? Function1<*, *> ?: return false
+    @Suppress("UNCHECKED_CAST")
+    private fun wrapPreprocessingCallback(target: Any): Boolean {
+        val callback = getFieldValue(target, PREPROCESSING_FIELD) as? Function1<*, *> ?: return false
         if (!wrappedCallbacks.add(callback)) return false
 
         val original = callback as Function1<Any?, Any?>
         val wrapped: (Any?) -> Any? = { input ->
             if (input != null) {
-                mutateSendPayload(input)
+                mutateOutgoingData(input)
             }
 
             val result = original.invoke(input)
 
             if (result != null) {
-                mutateSendPayload(result)
+                mutateOutgoingData(result)
             }
 
-            val nestedMessage = getFieldValue(target, "message")
+            val nestedMessage = getFieldValue(target, MESSAGE_FIELD)
             if (nestedMessage != null) {
                 mutateContentField(nestedMessage, "Message")
             }
@@ -94,7 +97,7 @@ class KeyIntercept : Plugin() {
             result
         }
 
-        val replaced = setFieldValue(target, "onPreprocessing", wrapped)
+        val replaced = setFieldValue(target, PREPROCESSING_FIELD, wrapped)
         if (replaced) logger.info("Wrapped Send.onPreprocessing")
         return replaced
     }
