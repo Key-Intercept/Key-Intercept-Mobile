@@ -28,23 +28,25 @@ class KeyIntercept : Plugin() {
             patcher.patch(method, Hook { hookParam: XC_MethodHook.MethodHookParam ->
                 var changed = false
                 val visited = Collections.newSetFromMap(IdentityHashMap<Any, Boolean>())
-                var consumedDirectStringMutation = false
+                val stringArgIndexes = mutableListOf<Int>()
 
                 hookParam.args.forEachIndexed { index, arg ->
                     if (arg is String) {
-                        // Only mutate one message-like String argument per send call.
-                        if (!consumedDirectStringMutation && isLikelyMessageContent(arg)) {
-                            val updated = appendMarker(arg)
-                            if (updated != arg) {
-                                hookParam.args[index] = updated
-                                changed = true
-                                consumedDirectStringMutation = true
-                            }
-                        }
+                        stringArgIndexes.add(index)
                         return@forEachIndexed
                     }
 
                     if (arg != null && mutateMessageLikeFields(arg, visited, 0)) {
+                        changed = true
+                    }
+                }
+
+                val directIndex = pickBestStringArgIndex(hookParam.args, stringArgIndexes)
+                if (directIndex != null) {
+                    val original = hookParam.args[directIndex] as String
+                    val updated = appendMarker(original)
+                    if (updated != original) {
+                        hookParam.args[directIndex] = updated
                         changed = true
                     }
                 }
@@ -108,7 +110,7 @@ class KeyIntercept : Plugin() {
 
                     if (value is String) {
                         val fieldName = field.name.lowercase()
-                        val shouldMutate = fieldNameHints.any { fieldName.contains(it) } && isLikelyMessageContent(value)
+                        val shouldMutate = fieldNameHints.any { fieldName.contains(it) }
                         if (!shouldMutate) return@runCatching
                         val updated = appendMarker(value)
                         if (updated != value) {
@@ -131,6 +133,26 @@ class KeyIntercept : Plugin() {
         }
 
         return changed
+    }
+
+    private fun pickBestStringArgIndex(args: Array<Any?>, indexes: List<Int>): Int? {
+        if (indexes.isEmpty()) return null
+
+        // Prefer the longest human-looking string, which is typically message content.
+        val bestHuman = indexes
+            .map { it to (args[it] as String) }
+            .filter { (_, value) -> isLikelyMessageContent(value) }
+            .maxByOrNull { (_, value) -> value.length }
+            ?.first
+
+        if (bestHuman != null) return bestHuman
+
+        // Fallback: longest non-empty string.
+        return indexes
+            .map { it to (args[it] as String) }
+            .filter { (_, value) -> value.isNotEmpty() }
+            .maxByOrNull { (_, value) -> value.length }
+            ?.first
     }
 
     private fun isLikelyMessageContent(value: String): Boolean {
