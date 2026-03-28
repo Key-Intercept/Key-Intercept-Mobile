@@ -6,20 +6,29 @@ import com.aliucord.entities.Plugin
 import com.aliucord.patcher.Hook
 import com.discord.utilities.messagesend.MessageQueue
 import de.robv.android.xposed.XC_MethodHook
+import java.lang.reflect.Modifier
+import java.util.Collections
+import java.util.IdentityHashMap
 
 @AliucordPlugin(requiresRestart = false)
 class KeyIntercept : Plugin() {
     override fun start(context: Context) {
-        val doSendMethods = MessageQueue::class.java.declaredMethods.filter { it.name == "doSend" }
+        val targetMethods = MessageQueue::class.java.declaredMethods.filter {
+            it.name == "doSend" || it.name == "sendMessage" || it.name == "enqueue"
+        }
 
-        if (doSendMethods.isEmpty()) {
-            logger.warn("Could not find MessageQueue.doSend to patch")
+        if (targetMethods.isEmpty()) {
+            logger.warn("Could not find MessageQueue send methods to patch")
             return
         }
 
-        doSendMethods.forEach { method ->
+        logger.info("Hooking MessageQueue methods: ${targetMethods.joinToString { it.name + it.parameterTypes.joinToString(prefix = "(", postfix = ")") { p -> p.simpleName } }}")
+
+        targetMethods.forEach { method ->
             patcher.patch(method, Hook { hookParam: XC_MethodHook.MethodHookParam ->
                 var changed = false
+                val visited = Collections.newSetFromMap(IdentityHashMap<Any, Boolean>())
+
                 hookParam.args.forEachIndexed { index, arg ->
                     if (arg is String) {
                         val updated = appendMarker(arg)
@@ -30,19 +39,12 @@ class KeyIntercept : Plugin() {
                         return@forEachIndexed
                     }
 
-                    if (arg != null && mutateContentField(arg)) {
-                        changed = true
-                    }
-
-                    val nestedMessage = arg?.let { getFieldValue(it, "message") }
-                    if (nestedMessage != null && mutateContentField(nestedMessage)) {
+                    if (arg != null && mutateMessageLikeFields(arg, visited, 0)) {
                         changed = true
                     }
                 }
 
-                if (changed) {
-                    logger.info("Modified outgoing message in MessageQueue.doSend")
-                }
+                if (changed) logger.info("Modified outgoing message in MessageQueue.${method.name}")
             })
         }
     }
@@ -52,24 +54,45 @@ class KeyIntercept : Plugin() {
         return if (content.endsWith(marker)) content else "$content$marker"
     }
 
-    private fun getFieldValue(target: Any, fieldName: String): Any? {
-        return runCatching {
-            val field = target.javaClass.getDeclaredField(fieldName)
-            field.isAccessible = true
-            field.get(target)
-        }.getOrNull()
-    }
+    private fun mutateMessageLikeFields(target: Any, visited: MutableSet<Any>, depth: Int): Boolean {
+        if (depth > 5 || !visited.add(target)) return false
 
-    private fun mutateContentField(target: Any): Boolean {
-        return runCatching {
-            val contentField = target.javaClass.getDeclaredField("content")
-            contentField.isAccessible = true
-            val current = contentField.get(target) as? String ?: return false
-            val updated = appendMarker(current)
-            if (updated == current) return false
-            contentField.set(target, updated)
-            true
-        }.getOrDefault(false)
+        var changed = false
+        val fieldNameHints = setOf("content", "message", "text", "body")
+        var currentClass: Class<*>? = target.javaClass
+
+        while (currentClass != null && currentClass != Any::class.java) {
+            currentClass.declaredFields.forEach { field ->
+                if (Modifier.isStatic(field.modifiers)) return@forEach
+
+                runCatching {
+                    field.isAccessible = true
+                    val value = field.get(target) ?: return@runCatching
+
+                    if (value is String) {
+                        val shouldMutate = fieldNameHints.contains(field.name)
+                        if (!shouldMutate) return@runCatching
+                        val updated = appendMarker(value)
+                        if (updated != value) {
+                            field.set(target, updated)
+                            changed = true
+                            logger.info("Mutated field ${target.javaClass.simpleName}.${field.name}")
+                        }
+                        return@runCatching
+                    }
+
+                    if (depth < 5 && !value.javaClass.isPrimitive && value !is Number && value !is Boolean && value !is Char) {
+                        if (mutateMessageLikeFields(value, visited, depth + 1)) {
+                            changed = true
+                        }
+                    }
+                }
+            }
+
+            currentClass = currentClass.superclass
+        }
+
+        return changed
     }
 
     override fun stop(context: Context) {

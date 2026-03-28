@@ -1,8 +1,11 @@
-version = "4.0.0" // Plugin version. Increment this to trigger the updater
+version = "4.0.1" // Plugin version. Increment this to trigger the updater
 description = "Key Intercept"
 
 aliucord {
     changelog = """
+        # 4.0.1
+        * Improve send interception to mutate final outgoing payload
+
         # 4.0.0
         * Initial version
     """.trimIndent()
