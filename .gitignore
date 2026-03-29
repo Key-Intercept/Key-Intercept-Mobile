@@ -2,3 +2,4 @@
 .koltin/
 .vscode/
 build/
+local.properties
