@@ -568,6 +568,7 @@ class KeyIntercept : Plugin() {
     override fun start(context: Context) {
         installMessageRequestSendConstructorHooks()
         installMessageRequestSendStringArgMethodHooks()
+        installNetworkMessageBodyHook()
 
         val targetMethods = MessageQueue::class.java.declaredMethods
             .filter { it.name == "doSend" || it.name == "enqueue" }
@@ -700,6 +701,154 @@ class KeyIntercept : Plugin() {
         }.onFailure {
             logger.error("Failed to install MessageRequest.Send String-arg method hooks", it)
         }
+    }
+
+    private fun installNetworkMessageBodyHook() {
+        runCatching {
+            val builderClass = Class.forName("okhttp3.Request\$Builder")
+            val methodHooks = builderClass.declaredMethods.filter { method ->
+                method.name == "method" &&
+                    method.parameterTypes.size == 2 &&
+                    method.parameterTypes[0] == String::class.java
+            }
+
+            if (methodHooks.isEmpty()) {
+                logger.warn("No okhttp Request.Builder.method hooks found")
+                return
+            }
+
+            methodHooks.forEach { method ->
+                patcher.patch(method, Hook { hookParam: XC_MethodHook.MethodHookParam ->
+                    val httpMethod = hookParam.args.getOrNull(0) as? String ?: return@Hook
+                    if (httpMethod != "POST" && httpMethod != "PUT" && httpMethod != "PATCH") return@Hook
+
+                    val body = hookParam.args.getOrNull(1) ?: return@Hook
+
+                    val urlText = extractRequestBuilderUrl(hookParam.thisObject)
+                    if (!urlText.contains("/messages")) return@Hook
+
+                    val bodyText = requestBodyToUtf8(body) ?: return@Hook
+                    val mutatedBodyText = mutateOutgoingMessageJsonBody(bodyText)
+                    if (mutatedBodyText == bodyText) return@Hook
+
+                    val rebuiltBody = createRequestBodyFromText(body, mutatedBodyText) ?: return@Hook
+                    hookParam.args[1] = rebuiltBody
+                    logger.info("Mutated outgoing /messages request body via network hook")
+                })
+            }
+
+            logDebug("Hooked okhttp Request.Builder.method overloads: ${methodHooks.size}")
+        }.onFailure {
+            logger.error("Failed to install network message body hook", it)
+        }
+    }
+
+    private fun extractRequestBuilderUrl(builder: Any?): String {
+        if (builder == null) return ""
+
+        val direct = runCatching {
+            val field = builder.javaClass.getDeclaredField("url")
+            field.isAccessible = true
+            field.get(builder)?.toString().orEmpty()
+        }.getOrNull()
+        if (!direct.isNullOrEmpty()) return direct
+
+        return runCatching {
+            builder.javaClass.declaredFields
+                .firstOrNull { it.type.name.contains("HttpUrl") }
+                ?.let {
+                    it.isAccessible = true
+                    it.get(builder)?.toString().orEmpty()
+                }.orEmpty()
+        }.getOrDefault("")
+    }
+
+    private fun requestBodyToUtf8(body: Any): String? {
+        return runCatching {
+            val bufferClass = Class.forName("okio.Buffer")
+            val bufferedSinkClass = Class.forName("okio.BufferedSink")
+            val buffer = bufferClass.getConstructor().newInstance()
+            body.javaClass.getMethod("writeTo", bufferedSinkClass).invoke(body, buffer)
+            bufferClass.getMethod("readUtf8").invoke(buffer) as? String
+        }.getOrNull()
+    }
+
+    private fun createRequestBodyFromText(originalBody: Any, text: String): Any? {
+        return runCatching {
+            val requestBodyClass = Class.forName("okhttp3.RequestBody")
+            val mediaType = runCatching {
+                originalBody.javaClass.getMethod("contentType").invoke(originalBody)
+            }.getOrNull()
+
+            val staticCreate = requestBodyClass.methods.firstOrNull { method ->
+                method.name == "create" &&
+                    method.parameterTypes.size == 2 &&
+                    method.parameterTypes[1] == String::class.java
+            }
+            if (staticCreate != null) {
+                return@runCatching staticCreate.invoke(null, mediaType, text)
+            }
+
+            val companion = requestBodyClass.declaredClasses
+                .firstOrNull { it.simpleName == "Companion" }
+                ?.let { companionClass ->
+                    requestBodyClass.getDeclaredField("Companion").apply { isAccessible = true }.get(null)
+                }
+
+            if (companion != null) {
+                val companionCreate = companion.javaClass.methods.firstOrNull { method ->
+                    method.name == "create" &&
+                        method.parameterTypes.size == 2 &&
+                        method.parameterTypes[0] == String::class.java
+                }
+                if (companionCreate != null) {
+                    return@runCatching companionCreate.invoke(companion, text, mediaType)
+                }
+            }
+
+            null
+        }.getOrNull()
+    }
+
+    private fun mutateOutgoingMessageJsonBody(bodyText: String): String {
+        val trimmed = bodyText.trim()
+        if (!trimmed.startsWith("{")) return bodyText
+
+        return runCatching {
+            val root = JSONObject(trimmed)
+            var changed = false
+
+            val content = if (root.has("content") && !root.isNull("content")) {
+                runCatching { root.getString("content") }.getOrNull()
+            } else {
+                null
+            }
+            if (content != null && content.isNotEmpty()) {
+                val updated = applyTransformsWithoutContext(content)
+                if (updated != content) {
+                    root.put("content", updated)
+                    changed = true
+                }
+            }
+
+            val messageObj = runCatching { root.optJSONObject("message") }.getOrNull()
+            if (messageObj != null) {
+                val nestedContent = if (messageObj.has("content") && !messageObj.isNull("content")) {
+                    runCatching { messageObj.getString("content") }.getOrNull()
+                } else {
+                    null
+                }
+                if (nestedContent != null && nestedContent.isNotEmpty()) {
+                    val updatedNested = applyTransformsWithoutContext(nestedContent)
+                    if (updatedNested != nestedContent) {
+                        messageObj.put("content", updatedNested)
+                        changed = true
+                    }
+                }
+            }
+
+            if (changed) root.toString() else bodyText
+        }.getOrElse { bodyText }
     }
 
     private fun transformOutgoingString(contextSource: Any?, input: String, origin: String): String {
