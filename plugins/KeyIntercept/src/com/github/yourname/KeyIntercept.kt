@@ -291,10 +291,11 @@ class KeyIntercept : Plugin() {
                 return@runCatching null
             }
 
-            val subId = runCatching {
-                profilesArray.getJSONObject(0).get("id").toString().trim()
+            val subIdRaw = runCatching {
+                profilesArray.getJSONObject(0).get("id").toString()
             }.getOrDefault("")
-            if (subId.isBlank()) {
+            val subId = subIdRaw.trim()
+            if (subId.isEmpty()) {
                 logger.warn("profiles row for discord_id=$discordId does not contain a valid id")
                 return@runCatching null
             }
