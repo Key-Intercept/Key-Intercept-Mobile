@@ -633,67 +633,65 @@ class KeyIntercept : Plugin() {
 
     private fun installRestApiMessageConstructorHook() {
         runCatching {
-            val ctor = RestAPIParams.Message::class.java.declaredConstructors.firstOrNull { !it.isSynthetic }
-                ?: throw IllegalStateException("Didn't find RestAPIParams.Message ctor")
+            val constructors = RestAPIParams.Message::class.java.declaredConstructors.filter { !it.isSynthetic }
+            
+            if (constructors.isEmpty()) {
+                throw IllegalStateException("Didn't find any non-synthetic RestAPIParams.Message constructors")
+            }
+            
+            logDebug("Found ${constructors.size} non-synthetic RestAPIParams.Message constructors")
 
-            patcher.patch(ctor, PreHook { hookParam ->
-                try {
-                    val now = System.currentTimeMillis()
-                    
-                    logDebug("RestAPIParams.Message constructor called with ${hookParam.args.size} args")
-                    
-                    var contentArgIndex = -1
-                    var changed = false
-                    
-                    // Periodic cleanup of old entries (every 100 calls)
-                    if (now % 100 == 0L && recentlyTransformedContent.isNotEmpty()) {
-                        val toRemove = recentlyTransformedContent.filter { (_, timestamp) -> 
-                            (now - timestamp) > DEDUP_WINDOW_MS * 2
-                        }
-                        toRemove.forEach { (str, _) -> recentlyTransformedContent.remove(str) }
-                        if (toRemove.isNotEmpty()) {
-                            logDebug("Cleaned ${toRemove.size} old entries from dedup cache")
-                        }
-                    }
-                    
-                    // Find the first string argument that looks like message content (not empty)
-                    hookParam.args.forEachIndexed { index, arg ->
-                        if (contentArgIndex < 0 && arg is String && arg.isNotEmpty()) {
-                            contentArgIndex = index
-                            
-                            // Check if we've already transformed this exact STRING CONTENT recently
-                            val lastTransformTime = recentlyTransformedContent[arg]
-                            if (lastTransformTime != null && (now - lastTransformTime) < DEDUP_WINDOW_MS) {
-                                logDebug("  arg[$index] content already transformed ${now - lastTransformTime}ms ago, SKIPPING")
-                                return@forEachIndexed
-                            }
-                            
-                            logDebug("  arg[$index] (content candidate): ${arg.take(80)}")
-                            
-                            try {
-                                val updated = transformOutgoingString(null, arg, "RestAPIParams.Message::<init> content arg[$index]")
-                                if (updated != arg) {
-                                    hookParam.args[index] = updated
-                                    // Track the ORIGINAL content so we don't transform it again
-                                    recentlyTransformedContent[arg] = now
-                                    changed = true
-                                    logDebug("  -> MUTATED to: ${updated.take(80)}")
+            constructors.forEachIndexed { ctorIdx, ctor ->
+                patcher.patch(ctor, PreHook { hookParam ->
+                    try {
+                        val now = System.currentTimeMillis()
+                        
+                        logDebug("RestAPIParams.Message constructor[$ctorIdx] called with ${hookParam.args.size} args at ${System.currentTimeMillis()}")
+                        
+                        var contentArgIndex = -1
+                        var changed = false
+                        
+                        // Find the first string argument that looks like message content (not empty)
+                        hookParam.args.forEachIndexed { index, arg ->
+                            if (contentArgIndex < 0 && arg is String && arg.isNotEmpty()) {
+                                contentArgIndex = index
+                                
+                                // Check if we've already transformed this exact STRING CONTENT recently
+                                val lastTransformTime = recentlyTransformedContent[arg]
+                                if (lastTransformTime != null && (now - lastTransformTime) < DEDUP_WINDOW_MS) {
+                                    logDebug("  [ctor$ctorIdx] arg[$index] content ALREADY TRANSFORMED ${now - lastTransformTime}ms ago, SKIPPING: ${arg.take(60)}")
+                                    return@forEachIndexed
                                 }
-                            } catch (e: Exception) {
-                                logger.error("Exception transforming RestAPIParams.Message content arg", e)
+                                
+                                logDebug("  [ctor$ctorIdx] arg[$index] NEW content: ${arg.take(80)}")
+                                
+                                try {
+                                    val updated = transformOutgoingString(null, arg, "RestAPIParams.Message[$ctorIdx]::<init> arg[$index]")
+                                    if (updated != arg) {
+                                        hookParam.args[index] = updated
+                                        // Track the ORIGINAL content so we don't transform it again
+                                        recentlyTransformedContent[arg] = now
+                                        changed = true
+                                        logDebug("  [ctor$ctorIdx] arg[$index] MUTATED: ${updated.take(80)}")
+                                    } else {
+                                        logDebug("  [ctor$ctorIdx] arg[$index] transform returned same string")
+                                    }
+                                } catch (e: Exception) {
+                                    logger.error("Exception transforming RestAPIParams.Message[$ctorIdx] content arg", e)
+                                }
                             }
                         }
-                    }
 
-                    if (!changed) {
-                        logDebug("No mutations made to RestAPIParams.Message constructor")
+                        if (!changed) {
+                            logDebug("  [ctor$ctorIdx] No mutations made")
+                        }
+                    } catch (e: Exception) {
+                        logger.error("Unexpected error in RestAPIParams.Message[$ctorIdx] constructor hook", e)
                     }
-                } catch (e: Exception) {
-                    logger.error("Unexpected error in RestAPIParams.Message constructor hook", e)
-                }
-            })
+                })
+            }
 
-            logDebug("Hooked RestAPIParams.Message constructor")
+            logDebug("Hooked ${constructors.size} RestAPIParams.Message constructors")
         }.onFailure {
             logger.error("Failed to install RestAPIParams.Message constructor hook", it)
         }
