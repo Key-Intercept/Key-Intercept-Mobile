@@ -112,8 +112,26 @@ class KeyIntercept : Plugin() {
 
     private val wrappedCallbacks = Collections.newSetFromMap(IdentityHashMap<Any, Boolean>())
 
+    private fun logDebug(message: String) {
+        if (config.debug) logger.info("[KeyIntercept][Debug] $message")
+    }
+
+    private fun preview(input: String, maxLen: Int = 120): String {
+        return if (input.length <= maxLen) input else input.take(maxLen) + "..."
+    }
+
+    private fun describeArg(arg: Any?): String {
+        if (arg == null) return "null"
+        val klass = arg.javaClass.simpleName
+        val content = getFieldValue(arg, CONTENT_FIELD) as? String
+        return if (content != null) "$klass(content=\"${preview(content)}\")" else klass
+    }
+
     override fun load(context: Context) {
         logger.info("KeyIntercept loaded")
+        logDebug(
+            "Initial config: debug=${config.debug}, rules=${rules.size}, whitelist=${whitelist.map { it.serverName }}, petWords=${petWords.size}"
+        )
     }
 
     override fun start(context: Context) {
@@ -135,11 +153,19 @@ class KeyIntercept : Plugin() {
                 }
             }"
         )
+        logDebug("Installing hooks for ${targetMethods.size} MessageQueue method(s)")
 
         targetMethods.forEach { method ->
             patcher.patch(method, Hook { hookParam: XC_MethodHook.MethodHookParam ->
+                logDebug(
+                    "Hook hit: MessageQueue.${method.name} args=${hookParam.args.joinToString(prefix = "[", postfix = "]") { describeArg(it) }}"
+                )
                 val changed = hookParam.args.any { arg -> arg != null && mutateOutgoingData(arg) }
-                if (changed) logger.info("Modified outgoing message in MessageQueue.${method.name}")
+                if (changed) {
+                    logger.info("Modified outgoing message in MessageQueue.${method.name}")
+                } else {
+                    logDebug("No mutation performed in MessageQueue.${method.name}")
+                }
             })
         }
     }
@@ -149,6 +175,7 @@ class KeyIntercept : Plugin() {
     }
 
     private fun mutateOutgoingData(candidate: Any): Boolean {
+        logDebug("Inspecting candidate ${candidate.javaClass.name}")
         var changed = false
 
         if (wrapPreprocessingCallback(candidate)) {
@@ -156,6 +183,9 @@ class KeyIntercept : Plugin() {
         }
 
         val nestedMessage = getFieldValue(candidate, MESSAGE_FIELD)
+        if (nestedMessage == null) {
+            logDebug("No nested '$MESSAGE_FIELD' field on ${candidate.javaClass.simpleName}")
+        }
         if (nestedMessage != null && mutateContentField(nestedMessage, "Message")) {
             changed = true
         }
@@ -168,7 +198,9 @@ class KeyIntercept : Plugin() {
     }
 
     private fun checkWhitelist(serverName: String): Boolean {
-        return whitelist.any { it.serverName == serverName }
+        val allowed = whitelist.any { it.serverName == serverName }
+        logDebug("Whitelist check for '$serverName' => $allowed (allowed=${whitelist.map { it.serverName }})")
+        return allowed
     }
 
     private fun shouldApplyRules(): Boolean = config.rulesEnd > System.currentTimeMillis()
@@ -396,39 +428,75 @@ class KeyIntercept : Plugin() {
             else -> serverName
         }
 
-        if (!checkWhitelist(nameToCheck)) return content
+        logDebug(
+            "alterMessage source=${source.javaClass.simpleName}, channel='$channelName', dm='$dmName', guild='$serverName', chosen='$nameToCheck', input='${preview(content)}'"
+        )
+
+        if (!checkWhitelist(nameToCheck)) {
+            logDebug("Skipping mutation because target is not whitelisted")
+            return content
+        }
         if (channelName.contains("sfw", ignoreCase = true) && !channelName.contains("nsfw", ignoreCase = true)) {
+            logDebug("Skipping mutation because channel '$channelName' is SFW")
             return content
         }
 
+        fun applyStage(name: String, input: String, transform: (String) -> String): String {
+            val output = transform(input)
+            if (output == input) {
+                logDebug("Stage '$name' produced no changes")
+            } else {
+                logDebug("Stage '$name' changed text to '${preview(output)}'")
+            }
+            return output
+        }
+
         var modified = content
-        modified = applyRules(modified)
-        modified = applyUwu(modified)
-        modified = applyHorny(modified)
-        modified = applyPet(modified)
-        modified = applyBimbo(modified)
-        modified = applyGag(modified)
-        modified = applyDrone(modified)
+        modified = applyStage("rules", modified, ::applyRules)
+        modified = applyStage("uwu", modified, ::applyUwu)
+        modified = applyStage("horny", modified, ::applyHorny)
+        modified = applyStage("pet", modified, ::applyPet)
+        modified = applyStage("bimbo", modified, ::applyBimbo)
+        modified = applyStage("gag", modified, ::applyGag)
+        modified = applyStage("drone", modified, ::applyDrone)
         return modified
     }
 
     private fun mutateContentField(target: Any, sourceName: String): Boolean {
-        val content = getFieldValue(target, CONTENT_FIELD) as? String ?: return false
+        val content = getFieldValue(target, CONTENT_FIELD) as? String
+        if (content == null) {
+            logDebug("$sourceName has no '$CONTENT_FIELD' String field (class=${target.javaClass.name})")
+            return false
+        }
+
         val updated = alterMessage(target, content)
-        if (updated == content) return false
+        if (updated == content) {
+            logDebug("No content update for $sourceName")
+            return false
+        }
 
         return setFieldValue(target, CONTENT_FIELD, updated).also { success ->
             if (success) logger.info("Mutated $sourceName.content")
+            if (!success) logDebug("Failed to write '$CONTENT_FIELD' back to ${target.javaClass.name}")
         }
     }
 
     @Suppress("UNCHECKED_CAST")
     private fun wrapPreprocessingCallback(target: Any): Boolean {
-        val callback = getFieldValue(target, PREPROCESSING_FIELD) as? Function1<*, *> ?: return false
-        if (!wrappedCallbacks.add(callback)) return false
+        val callback = getFieldValue(target, PREPROCESSING_FIELD) as? Function1<*, *>
+        if (callback == null) {
+            logDebug("No '$PREPROCESSING_FIELD' callback on ${target.javaClass.name}")
+            return false
+        }
+
+        if (!wrappedCallbacks.add(callback)) {
+            logDebug("Callback already wrapped for ${target.javaClass.name}")
+            return false
+        }
 
         val original = callback as Function1<Any?, Any?>
         val wrapped: (Any?) -> Any? = { input ->
+            logDebug("Preprocessing callback invoked for ${target.javaClass.simpleName}")
             if (input != null) mutateOutgoingData(input)
 
             val result = original.invoke(input)
@@ -445,6 +513,7 @@ class KeyIntercept : Plugin() {
 
         val replaced = setFieldValue(target, PREPROCESSING_FIELD, wrapped)
         if (replaced) logger.info("Wrapped Send.onPreprocessing")
+        if (!replaced) logDebug("Failed to replace '$PREPROCESSING_FIELD' on ${target.javaClass.name}")
         return replaced
     }
 
