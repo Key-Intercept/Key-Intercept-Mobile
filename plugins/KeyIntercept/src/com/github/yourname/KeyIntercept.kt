@@ -703,6 +703,10 @@ class KeyIntercept : Plugin() {
         logDebug("Inspecting candidate ${candidate.javaClass.name}")
         var changed = false
 
+        if (isSendPayload(candidate) && wrapPreprocessingCallback(candidate)) {
+            changed = true
+        }
+
         val nestedMessage = getFieldValue(candidate, MESSAGE_FIELD)
         if (nestedMessage == null) {
             logDebug("No nested '$MESSAGE_FIELD' field on ${candidate.javaClass.simpleName}")
@@ -722,14 +726,15 @@ class KeyIntercept : Plugin() {
         return changed
     }
 
-    private fun mutateKnownSendTextFields(target: Any, sourceName: String): Boolean {
+    private fun isSendPayload(target: Any): Boolean {
         val className = target.javaClass.name
         val simpleName = target.javaClass.simpleName
-        val looksLikeSendPayload =
-            className.contains("MessageRequest", ignoreCase = true) ||
-                simpleName.equals("Send", ignoreCase = true)
+        return className.contains("MessageRequest", ignoreCase = true) ||
+            simpleName.equals("Send", ignoreCase = true)
+    }
 
-        if (!looksLikeSendPayload) return false
+    private fun mutateKnownSendTextFields(target: Any, sourceName: String): Boolean {
+        if (!isSendPayload(target)) return false
 
         val fieldCandidates = arrayOf(
             "messageContent",
@@ -1214,44 +1219,16 @@ class KeyIntercept : Plugin() {
         val wrapped: (Any?) -> Any? = { input ->
             logDebug("Preprocessing callback invoked for ${target.javaClass.simpleName}")
             val transformedInput = when (input) {
-                is String -> {
-                    val contextual = alterMessage(target, input)
-                    if (contextual == input && resolveChannelId(target) == null) {
-                        logDebug("Context unavailable in preprocessing input; applying fallback transforms")
-                        applyTransformsWithoutContext(input)
-                    } else {
-                        contextual
-                    }
-                }
+                is String -> transformOutgoingString(target, input, "Send.onPreprocessing input")
                 null -> null
-                else -> {
-                    mutateOutgoingData(input)
-                    input
-                }
+                else -> input
             }
 
             val originalResult = original.invoke(transformedInput)
-            val sourceForResult = if (transformedInput is String) target else transformedInput ?: target
             val transformedResult = when (originalResult) {
-                is String -> {
-                    val contextual = alterMessage(sourceForResult, originalResult)
-                    if (contextual == originalResult && resolveChannelId(sourceForResult) == null) {
-                        logDebug("Context unavailable in preprocessing result; applying fallback transforms")
-                        applyTransformsWithoutContext(originalResult)
-                    } else {
-                        contextual
-                    }
-                }
+                is String -> transformOutgoingString(target, originalResult, "Send.onPreprocessing result")
                 null -> null
-                else -> {
-                    mutateOutgoingData(originalResult)
-                    originalResult
-                }
-            }
-
-            val nestedMessage = getFieldValue(target, MESSAGE_FIELD)
-            if (nestedMessage != null) {
-                mutateContentField(nestedMessage, "Message")
+                else -> originalResult
             }
 
             transformedResult
