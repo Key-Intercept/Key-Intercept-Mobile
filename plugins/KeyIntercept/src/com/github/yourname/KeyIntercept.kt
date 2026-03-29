@@ -4,8 +4,10 @@ import android.content.Context
 import com.aliucord.annotations.AliucordPlugin
 import com.aliucord.entities.Plugin
 import com.aliucord.patcher.Hook
+import com.aliucord.patcher.PreHook
 import com.aliucord.utils.ChannelUtils
 import com.aliucord.wrappers.ChannelWrapper
+import com.discord.restapi.RestAPIParams
 import com.discord.stores.StoreStream
 import com.discord.utilities.messagesend.MessageQueue
 import de.robv.android.xposed.XC_MethodHook
@@ -136,6 +138,7 @@ class KeyIntercept : Plugin() {
     private val wrappedCallbacks = Collections.newSetFromMap(IdentityHashMap<Any, Boolean>())
     private var supabasePollExecutor: ScheduledExecutorService? = null
     private val localDebugOverride = true
+    private val useRestApiSendHookOnly = true
     @Volatile
     private var initialSupabaseSyncComplete = false
 
@@ -566,6 +569,11 @@ class KeyIntercept : Plugin() {
     }
 
     override fun start(context: Context) {
+        if (useRestApiSendHookOnly) {
+            installRestApiMessageConstructorHook()
+            return
+        }
+
         installMessageRequestSendConstructorHooks()
         installMessageRequestSendStringArgMethodHooks()
         installNetworkMessageBodyHook()
@@ -616,6 +624,41 @@ class KeyIntercept : Plugin() {
                     logDebug("No mutation performed in MessageQueue.${method.name}")
                 }
             })
+        }
+    }
+
+    private fun installRestApiMessageConstructorHook() {
+        runCatching {
+            val ctor = RestAPIParams.Message::class.java.declaredConstructors.firstOrNull { !it.isSynthetic }
+                ?: throw IllegalStateException("Didn't find RestAPIParams.Message ctor")
+
+            patcher.patch(ctor, PreHook { hookParam ->
+                var changed = false
+                
+                logDebug("RestAPIParams.Message constructor called with ${hookParam.args.size} args")
+                
+                hookParam.args.forEachIndexed { index, arg ->
+                    if (arg is String && arg.isNotEmpty()) {
+                        logDebug("  arg[$index] (String): ${arg.take(100)}")
+                        val updated = transformOutgoingString(null, arg, "RestAPIParams.Message::<init> arg[$index]")
+                        if (updated != arg) {
+                            hookParam.args[index] = updated
+                            changed = true
+                            logDebug("  -> MUTATED to: ${updated.take(100)}")
+                        }
+                    } else if (arg != null) {
+                        logDebug("  arg[$index] (${arg.javaClass.simpleName}): $arg")
+                    }
+                }
+
+                if (changed) {
+                    logger.info("Modified outgoing message in RestAPIParams.Message constructor")
+                }
+            })
+
+            logDebug("Hooked RestAPIParams.Message constructor")
+        }.onFailure {
+            logger.error("Failed to install RestAPIParams.Message constructor hook", it)
         }
     }
 
