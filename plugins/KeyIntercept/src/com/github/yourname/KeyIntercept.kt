@@ -142,9 +142,10 @@ class KeyIntercept : Plugin() {
     @Volatile
     private var initialSupabaseSyncComplete = false
     
-    // Deduplication: track recently-transformed string CONTENT by value (not identity)
-    private val recentlyTransformedContent = Collections.synchronizedMap(HashMap<String, Long>())
-    private val DEDUP_WINDOW_MS = 100L
+    // Deduplication: track when the last message transform happened globally
+    @Volatile
+    private var lastMessageTransformTime: Long = 0
+    private val DEDUP_WINDOW_MS = 150L
 
     private fun logDebug(message: String) {
         if (localDebugOverride || config.debug) {
@@ -646,7 +647,13 @@ class KeyIntercept : Plugin() {
                     try {
                         val now = System.currentTimeMillis()
                         
-                        logDebug("RestAPIParams.Message constructor[$ctorIdx] called with ${hookParam.args.size} args at ${System.currentTimeMillis()}")
+                        logDebug("RestAPIParams.Message constructor[$ctorIdx] called at $now")
+                        
+                        // Global dedup: if we just transformed a message in the last DEDUP_WINDOW_MS, skip this one
+                        if ((now - lastMessageTransformTime) < DEDUP_WINDOW_MS) {
+                            logDebug("  [ctor$ctorIdx] DEDUP: Last transform was only ${now - lastMessageTransformTime}ms ago, SKIPPING entire constructor")
+                            return@PreHook
+                        }
                         
                         var contentArgIndex = -1
                         var changed = false
@@ -656,21 +663,13 @@ class KeyIntercept : Plugin() {
                             if (contentArgIndex < 0 && arg is String && arg.isNotEmpty()) {
                                 contentArgIndex = index
                                 
-                                // Check if we've already transformed this exact STRING CONTENT recently
-                                val lastTransformTime = recentlyTransformedContent[arg]
-                                if (lastTransformTime != null && (now - lastTransformTime) < DEDUP_WINDOW_MS) {
-                                    logDebug("  [ctor$ctorIdx] arg[$index] content ALREADY TRANSFORMED ${now - lastTransformTime}ms ago, SKIPPING: ${arg.take(60)}")
-                                    return@forEachIndexed
-                                }
-                                
                                 logDebug("  [ctor$ctorIdx] arg[$index] NEW content: ${arg.take(80)}")
                                 
                                 try {
                                     val updated = transformOutgoingString(null, arg, "RestAPIParams.Message[$ctorIdx]::<init> arg[$index]")
                                     if (updated != arg) {
                                         hookParam.args[index] = updated
-                                        // Track the ORIGINAL content so we don't transform it again
-                                        recentlyTransformedContent[arg] = now
+                                        lastMessageTransformTime = now
                                         changed = true
                                         logDebug("  [ctor$ctorIdx] arg[$index] MUTATED: ${updated.take(80)}")
                                     } else {
@@ -964,7 +963,7 @@ class KeyIntercept : Plugin() {
         supabasePollExecutor?.shutdownNow()
         supabasePollExecutor = null
         initialSupabaseSyncComplete = false
-        recentlyTransformedContent.clear()
+        lastMessageTransformTime = 0
     }
 
     private fun mutateOutgoingData(candidate: Any): Boolean {
