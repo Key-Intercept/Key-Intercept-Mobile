@@ -14,6 +14,7 @@ import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URLEncoder
 import java.net.URL
+import java.lang.reflect.Modifier
 import java.util.Collections
 import java.util.Date
 import java.util.IdentityHashMap
@@ -664,6 +665,71 @@ class KeyIntercept : Plugin() {
             changed = true
         }
 
+        if (mutateAllStringFieldsDeep(candidate)) {
+            changed = true
+        }
+
+        return changed
+    }
+
+    private fun mutateAllStringFieldsDeep(root: Any): Boolean {
+        val className = root.javaClass.name
+        val simpleName = root.javaClass.simpleName
+        val looksLikeSendPayload =
+            className.contains("messagesend", ignoreCase = true) ||
+                className.contains("MessageRequest", ignoreCase = true) ||
+                simpleName.equals("Send", ignoreCase = true)
+        if (!looksLikeSendPayload) return false
+
+        val visited = Collections.newSetFromMap(IdentityHashMap<Any, Boolean>())
+        var changed = false
+
+        fun walk(node: Any?, depth: Int) {
+            if (node == null || depth > 3) return
+            if (!visited.add(node)) return
+
+            var currentClass: Class<*>? = node.javaClass
+            while (currentClass != null && currentClass != Any::class.java) {
+                for (field in currentClass.declaredFields) {
+                    if (Modifier.isStatic(field.modifiers)) continue
+
+                    val value = runCatching {
+                        field.isAccessible = true
+                        field.get(node)
+                    }.getOrNull() ?: continue
+
+                    if (value is String) {
+                        if (value.isEmpty()) continue
+                        val updated = alterMessage(root, value)
+                        if (updated != value) {
+                            val wrote = runCatching {
+                                field.isAccessible = true
+                                field.set(node, updated)
+                                true
+                            }.getOrDefault(false)
+                            if (wrote) {
+                                changed = true
+                                logDebug("Deep-mutation updated ${node.javaClass.simpleName}.${field.name}")
+                            }
+                        }
+                        continue
+                    }
+
+                    val fieldType = value.javaClass
+                    val skipType =
+                        fieldType.isPrimitive ||
+                            fieldType.isEnum ||
+                            fieldType.name.startsWith("java.") ||
+                            fieldType.name.startsWith("kotlin.")
+                    if (!skipType) {
+                        walk(value, depth + 1)
+                    }
+                }
+                currentClass = currentClass.superclass
+            }
+        }
+
+        walk(root, 0)
         return changed
     }
 
