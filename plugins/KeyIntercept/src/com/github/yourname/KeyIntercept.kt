@@ -260,9 +260,65 @@ class KeyIntercept : Plugin() {
         }.getOrNull()
     }
 
+    private fun resolveCurrentDiscordId(): Long? {
+        return runCatching {
+            val usersStore = StoreStream::class.java.getMethod("getUsers").invoke(null)
+            if (usersStore == null) return@runCatching null
+
+            val me = listOf("getMe", "getCurrentUser", "getSelf")
+                .asSequence()
+                .mapNotNull { methodName ->
+                    runCatching { usersStore.javaClass.getMethod(methodName).invoke(usersStore) }.getOrNull()
+                }
+                .firstOrNull()
+                ?: return@runCatching null
+
+            readLongField(me, "id", "userId")
+        }.onFailure {
+            logger.error("Failed to resolve current Discord user id", it)
+        }.getOrNull()
+    }
+
+    private fun resolveConfigIdForCurrentUser(): Long? {
+        return runCatching {
+            val discordId = resolveCurrentDiscordId() ?: return@runCatching null
+            logDebug("Resolving config id for discord_id=$discordId")
+
+            val profilesBody = supabaseGet("profiles", mapOf("discord_id" to discordId.toString()))
+            val profilesArray = JSONArray(profilesBody)
+            if (profilesArray.length() == 0) {
+                logger.warn("No row in profiles for discord_id=$discordId")
+                return@runCatching null
+            }
+
+            val subId = profilesArray.getJSONObject(0).readLong("id", 0L)
+            if (subId == 0L) {
+                logger.warn("profiles row for discord_id=$discordId does not contain a valid id")
+                return@runCatching null
+            }
+
+            val accessBody = supabaseGet("Sub_Config_Access", mapOf("sub_id" to subId.toString()))
+            val accessArray = JSONArray(accessBody)
+            if (accessArray.length() == 0) {
+                logger.warn("No row in Sub_Config_Access for sub_id=$subId")
+                return@runCatching null
+            }
+
+            val configId = accessArray.getJSONObject(0).readLong("config_id", 0L)
+            if (configId == 0L) {
+                logger.warn("Sub_Config_Access row for sub_id=$subId does not contain a valid config_id")
+                return@runCatching null
+            }
+
+            configId
+        }.onFailure {
+            logger.error("Failed to resolve config id from profiles/Sub_Config_Access", it)
+        }.getOrNull()
+    }
+
     private fun fetchRulesFromSupabase(): List<Rule> {
         return runCatching {
-            val body = supabaseGet("Rule", mapOf("config_id" to config.id.toString()))
+            val body = supabaseGet("Rules", mapOf("config_id" to config.id.toString()))
             val arr = JSONArray(body)
             buildList {
                 for (i in 0 until arr.length()) {
@@ -309,7 +365,7 @@ class KeyIntercept : Plugin() {
 
     private fun fetchPetWordsFromSupabase(): List<PetWord> {
         return runCatching {
-            val body = supabaseGet("Pet_Words", mapOf("pet_type" to config.petType.toString()))
+            val body = supabaseGet("Pet_Type_Words", mapOf("pet_type" to config.petType.toString()))
             val arr = JSONArray(body)
             buildList {
                 for (i in 0 until arr.length()) {
@@ -400,6 +456,14 @@ class KeyIntercept : Plugin() {
         }
 
         executor.execute {
+            val resolvedConfigId = resolveConfigIdForCurrentUser()
+            if (resolvedConfigId != null && resolvedConfigId != config.id) {
+                logDebug("Resolved config id from profiles/Sub_Config_Access: $resolvedConfigId")
+                config = config.copy(id = resolvedConfigId)
+            } else if (resolvedConfigId == null) {
+                logger.warn("Could not resolve config id from Supabase access mapping; using fallback config id=${config.id}")
+            }
+
             refreshFromSupabase("initial")
             initialSupabaseSyncComplete = true
             setupSupabasePolling()
@@ -433,8 +497,22 @@ class KeyIntercept : Plugin() {
                 logDebug(
                     "Hook hit: MessageQueue.${method.name} args=${hookParam.args.joinToString(prefix = "[", postfix = "]") { describeArg(it) }}"
                 )
+
+                val contextSource = hookParam.args.firstOrNull { it != null && it !is String }
+                var changedStringArg = false
+                hookParam.args.forEachIndexed { index, arg ->
+                    if (arg is String && contextSource != null) {
+                        val updated = alterMessage(contextSource, arg)
+                        if (updated != arg) {
+                            hookParam.args[index] = updated
+                            changedStringArg = true
+                            logDebug("Mutated String arg[$index] in MessageQueue.${method.name}")
+                        }
+                    }
+                }
+
                 val changed = hookParam.args.any { arg -> arg != null && mutateOutgoingData(arg) }
-                if (changed) {
+                if (changed || changedStringArg) {
                     logger.info("Modified outgoing message in MessageQueue.${method.name}")
                 } else {
                     logDebug("No mutation performed in MessageQueue.${method.name}")
@@ -876,18 +954,31 @@ class KeyIntercept : Plugin() {
         val original = callback as Function1<Any?, Any?>
         val wrapped: (Any?) -> Any? = { input ->
             logDebug("Preprocessing callback invoked for ${target.javaClass.simpleName}")
-            if (input != null) mutateOutgoingData(input)
+            val transformedInput = when (input) {
+                is String -> alterMessage(target, input)
+                null -> null
+                else -> {
+                    mutateOutgoingData(input)
+                    input
+                }
+            }
 
-            val result = original.invoke(input)
-
-            if (result != null) mutateOutgoingData(result)
+            val originalResult = original.invoke(transformedInput)
+            val transformedResult = when (originalResult) {
+                is String -> alterMessage(transformedInput ?: target, originalResult)
+                null -> null
+                else -> {
+                    mutateOutgoingData(originalResult)
+                    originalResult
+                }
+            }
 
             val nestedMessage = getFieldValue(target, MESSAGE_FIELD)
             if (nestedMessage != null) {
                 mutateContentField(nestedMessage, "Message")
             }
 
-            result
+            transformedResult
         }
 
         val replaced = setFieldValue(target, PREPROCESSING_FIELD, wrapped)
