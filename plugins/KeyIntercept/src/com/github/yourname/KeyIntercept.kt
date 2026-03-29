@@ -8,28 +8,20 @@ import com.aliucord.utils.ChannelUtils
 import com.aliucord.wrappers.ChannelWrapper
 import com.discord.stores.StoreStream
 import com.discord.utilities.messagesend.MessageQueue
-import io.github.jan.supabase.SupabaseClient
-import io.github.jan.supabase.createSupabaseClient
-import io.github.jan.supabase.postgrest.Postgrest
-import io.github.jan.supabase.postgrest.from
-import io.github.jan.supabase.realtime.PostgresAction
-import io.github.jan.supabase.realtime.Realtime
-import io.github.jan.supabase.realtime.RealtimeChannel
-import io.github.jan.supabase.realtime.channel
-import io.github.jan.supabase.realtime.postgresChangeFlow
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.GlobalScope
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.cancel
-import kotlinx.coroutines.flow.launchIn
-import kotlinx.coroutines.flow.onEach
-import kotlinx.coroutines.launch
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.decodeFromString
+import kotlinx.serialization.json.Json
 import de.robv.android.xposed.XC_MethodHook
+import java.net.HttpURLConnection
+import java.net.URLEncoder
+import java.net.URL
 import java.util.Collections
 import java.util.Date
 import java.util.IdentityHashMap
+import java.util.concurrent.Executors
+import java.util.concurrent.ScheduledExecutorService
+import java.util.concurrent.TimeUnit
 import kotlin.math.floor
 import kotlin.random.Random
 
@@ -46,6 +38,8 @@ class KeyIntercept : Plugin() {
         const val CONTENT_FIELD = "content"
         const val MESSAGE_FIELD = "message"
         const val PREPROCESSING_FIELD = "onPreprocessing"
+        const val SUPABASE_URL = "https://qjzgfwithyvmwctesnqs.supabase.co"
+        const val SUPABASE_KEY = "sb_publishable_cxq8QZp9BDtjE4G5qiPCFA_lUZ4Cbdh"
 
         var config: KeyInterceptConfig = KeyInterceptConfig(
             id = 1,
@@ -82,7 +76,6 @@ class KeyIntercept : Plugin() {
 
         var whitelist: List<ServerWhitelistItem> = listOf(
             ServerWhitelistItem(
-                id = 1,
                 configId = 1,
                 serverName = "Example Server"
             )
@@ -139,9 +132,8 @@ class KeyIntercept : Plugin() {
     )
 
     private val wrappedCallbacks = Collections.newSetFromMap(IdentityHashMap<Any, Boolean>())
-    private val supabaseJobs = Collections.synchronizedList(mutableListOf<Job>())
-    private val realtimeChannels = Collections.synchronizedList(mutableListOf<RealtimeChannel>())
-    private var supabaseClient: SupabaseClient? = null
+    private var supabasePollExecutor: ScheduledExecutorService? = null
+    private val json = Json { ignoreUnknownKeys = true }
     @Volatile
     private var initialSupabaseSyncComplete = false
 
@@ -149,9 +141,47 @@ class KeyIntercept : Plugin() {
         if (config.debug) logger.info("[KeyIntercept][Debug] $message")
     }
 
-    private fun launchSupabaseJob(block: suspend CoroutineScope.() -> Unit) {
-        val job = GlobalScope.launch(block = block)
-        supabaseJobs += job
+    private fun urlEncode(value: String): String {
+        return URLEncoder.encode(value, "UTF-8")
+    }
+
+    private fun supabaseGet(table: String, filters: Map<String, String> = emptyMap()): String {
+        val query = buildString {
+            append("select=*")
+            for ((key, value) in filters) {
+                append('&')
+                append(urlEncode(key))
+                append("=eq.")
+                append(urlEncode(value))
+            }
+        }
+
+        val endpoint = "$SUPABASE_URL/rest/v1/$table?$query"
+        val connection = (URL(endpoint).openConnection() as HttpURLConnection).apply {
+            requestMethod = "GET"
+            connectTimeout = 15_000
+            readTimeout = 15_000
+            setRequestProperty("apikey", SUPABASE_KEY)
+            setRequestProperty("Authorization", "Bearer $SUPABASE_KEY")
+            setRequestProperty("Accept", "application/json")
+        }
+
+        return try {
+            val body = runCatching {
+                connection.inputStream.bufferedReader().use { it.readText() }
+            }.getOrElse {
+                connection.errorStream?.bufferedReader()?.use { r -> r.readText() } ?: ""
+            }
+
+            val code = connection.responseCode
+            if (code !in 200..299) {
+                error("Supabase request failed for $table (HTTP $code): $body")
+            }
+
+            body
+        } finally {
+            connection.disconnect()
+        }
     }
 
     @Serializable
@@ -252,155 +282,83 @@ class KeyIntercept : Plugin() {
         )
     }
 
-    private suspend fun fetchConfigFromSupabase(client: SupabaseClient): KeyInterceptConfig? {
+    private fun fetchConfigFromSupabase(): KeyInterceptConfig? {
         return runCatching {
-            client.from("Config").select {
-                filter {
-                    eq("id", config.id)
-                }
-            }.decodeSingleOrNull<SupabaseKeyInterceptConfig>()?.toModel()
+            val body = supabaseGet("Config", mapOf("id" to config.id.toString()))
+            json.decodeFromString<List<SupabaseKeyInterceptConfig>>(body).firstOrNull()?.toModel()
         }.onFailure {
             logger.error("Failed to fetch config from Supabase", it)
         }.getOrNull()
     }
 
-    private suspend fun fetchRulesFromSupabase(client: SupabaseClient): List<Rule> {
+    private fun fetchRulesFromSupabase(): List<Rule> {
         return runCatching {
-            client.from("Rule").select {
-                filter {
-                    eq("config_id", config.id)
-                }
-            }.decodeList<SupabaseRule>().map { it.toModel() }
+            val body = supabaseGet("Rule", mapOf("config_id" to config.id.toString()))
+            json.decodeFromString<List<SupabaseRule>>(body).map { it.toModel() }
         }.onFailure {
             logger.error("Failed to fetch rules from Supabase", it)
         }.getOrDefault(emptyList())
     }
 
-    private suspend fun fetchWhitelistFromSupabase(client: SupabaseClient): List<ServerWhitelistItem> {
+    private fun fetchWhitelistFromSupabase(): List<ServerWhitelistItem> {
         return runCatching {
-            client.from("Server_Whitelist_Items").select {
-                filter {
-                    eq("config_id", config.id)
-                }
-            }.decodeList<SupabaseServerWhitelistItem>().map { it.toModel() }
+            val body = supabaseGet("Server_Whitelist_Items", mapOf("config_id" to config.id.toString()))
+            json.decodeFromString<List<SupabaseServerWhitelistItem>>(body).map { it.toModel() }
         }.onFailure {
             logger.error("Failed to fetch whitelist from Supabase", it)
         }.getOrDefault(emptyList())
     }
 
-    private suspend fun fetchPetWordsFromSupabase(client: SupabaseClient): List<PetWord> {
+    private fun fetchPetWordsFromSupabase(): List<PetWord> {
         return runCatching {
-            client.from("Pet_Words").select {
-                filter {
-                    eq("pet_type", config.petType)
-                }
-            }.decodeList<SupabasePetWord>().map { it.toModel() }
+            val body = supabaseGet("Pet_Words", mapOf("pet_type" to config.petType.toString()))
+            json.decodeFromString<List<SupabasePetWord>>(body).map { it.toModel() }
         }.onFailure {
             logger.error("Failed to fetch pet words from Supabase", it)
         }.getOrDefault(emptyList())
     }
 
-    private fun setupRealtimeSync(client: SupabaseClient) {
-        val configChannel = client.channel("public:Config")
-        val rulesChannel = client.channel("public:Rule")
-        val whitelistChannel = client.channel("public:Server_Whitelist_Items")
-        val petWordsChannel = client.channel("public:Pet_Words")
-
-        realtimeChannels += configChannel
-        realtimeChannels += rulesChannel
-        realtimeChannels += whitelistChannel
-        realtimeChannels += petWordsChannel
-
-        supabaseJobs += configChannel.postgresChangeFlow<PostgresAction>(schema = "public")
-            .onEach { action ->
-                logDebug("Supabase config change received: ${action::class.simpleName}")
-                val newConfig = fetchConfigFromSupabase(client)
-                if (newConfig != null) {
-                    config = newConfig
-                    logDebug("Supabase config updated: configId=${config.id}, petType=${config.petType}, debug=${config.debug}")
-
-                    val refreshedRules = fetchRulesFromSupabase(client)
-                    if (refreshedRules.isNotEmpty()) {
-                        rules = refreshedRules
-                        logDebug("Supabase rules refreshed after config change: ${rules.size}")
-                    }
-
-                    val refreshedWhitelist = fetchWhitelistFromSupabase(client)
-                    if (refreshedWhitelist.isNotEmpty()) {
-                        whitelist = refreshedWhitelist
-                        logDebug("Supabase whitelist refreshed after config change: ${whitelist.size}")
-                    }
-
-                    val refreshedPetWords = fetchPetWordsFromSupabase(client)
-                    if (refreshedPetWords.isNotEmpty()) {
-                        petWords = refreshedPetWords
-                        logDebug("Supabase pet words refreshed after config change: ${petWords.size}")
-                    }
-                }
+    private fun refreshFromSupabase(reason: String) {
+        runCatching {
+            fetchConfigFromSupabase()?.let {
+                config = it
+                logDebug("Supabase config updated ($reason): configId=${config.id}, petType=${config.petType}, debug=${config.debug}")
             }
-            .launchIn(GlobalScope)
 
-        supabaseJobs += rulesChannel.postgresChangeFlow<PostgresAction>(schema = "public")
-            .onEach { action ->
-                when (action) {
-                    is PostgresAction.Insert,
-                    is PostgresAction.Update,
-                    is PostgresAction.Delete -> {
-                        val newRules = fetchRulesFromSupabase(client)
-                        if (newRules.isNotEmpty()) {
-                            rules = newRules
-                            logDebug("Supabase rules updated via realtime: ${rules.size}")
-                        }
-                    }
-
-                    else -> {}
-                }
+            val fetchedRules = fetchRulesFromSupabase()
+            if (fetchedRules.isNotEmpty()) {
+                rules = fetchedRules
+                logDebug("Supabase rules updated ($reason): ${rules.size}")
             }
-            .launchIn(GlobalScope)
 
-        supabaseJobs += whitelistChannel.postgresChangeFlow<PostgresAction>(schema = "public")
-            .onEach { action ->
-                when (action) {
-                    is PostgresAction.Insert,
-                    is PostgresAction.Update,
-                    is PostgresAction.Delete -> {
-                        val newWhitelist = fetchWhitelistFromSupabase(client)
-                        if (newWhitelist.isNotEmpty()) {
-                            whitelist = newWhitelist
-                            logDebug("Supabase whitelist updated via realtime: ${whitelist.size}")
-                        }
-                    }
-
-                    else -> {}
-                }
+            val fetchedWhitelist = fetchWhitelistFromSupabase()
+            if (fetchedWhitelist.isNotEmpty()) {
+                whitelist = fetchedWhitelist
+                logDebug("Supabase whitelist updated ($reason): ${whitelist.size}")
             }
-            .launchIn(GlobalScope)
 
-        supabaseJobs += petWordsChannel.postgresChangeFlow<PostgresAction>(schema = "public")
-            .onEach { action ->
-                when (action) {
-                    is PostgresAction.Insert,
-                    is PostgresAction.Update,
-                    is PostgresAction.Delete -> {
-                        val newPetWords = fetchPetWordsFromSupabase(client)
-                        if (newPetWords.isNotEmpty()) {
-                            petWords = newPetWords
-                            logDebug("Supabase pet words updated via realtime: ${petWords.size}")
-                        }
-                    }
-
-                    else -> {}
-                }
+            val fetchedPetWords = fetchPetWordsFromSupabase()
+            if (fetchedPetWords.isNotEmpty()) {
+                petWords = fetchedPetWords
+                logDebug("Supabase pet words updated ($reason): ${petWords.size}")
             }
-            .launchIn(GlobalScope)
-
-        launchSupabaseJob {
-            runCatching { configChannel.subscribe() }.onFailure { logger.error("Failed to subscribe to config channel", it) }
-            runCatching { rulesChannel.subscribe() }.onFailure { logger.error("Failed to subscribe to rules channel", it) }
-            runCatching { whitelistChannel.subscribe() }.onFailure { logger.error("Failed to subscribe to whitelist channel", it) }
-            runCatching { petWordsChannel.subscribe() }.onFailure { logger.error("Failed to subscribe to pet words channel", it) }
-            logDebug("Supabase realtime channels subscribed")
+        }.onFailure {
+            logger.error("Supabase refresh failed ($reason)", it)
         }
+    }
+
+    private fun setupSupabasePolling() {
+        val executor = supabasePollExecutor
+        if (executor == null) {
+            logger.warn("Supabase poll executor missing; polling not started")
+            return
+        }
+
+        executor.scheduleWithFixedDelay({
+            refreshFromSupabase("poll")
+        }, 15L, 15L, TimeUnit.SECONDS)
+
+        logDebug("Supabase polling started (15s interval)")
     }
 
     private fun preview(input: String, maxLen: Int = 120): String {
@@ -421,59 +379,21 @@ class KeyIntercept : Plugin() {
             "Initial config: debug=${config.debug}, rules=${rules.size}, whitelist=${whitelist.map { it.serverName }}, petWords=${petWords.size}"
         )
 
-        val client = runCatching {
-            createSupabaseClient(
-                supabaseUrl = "https://qjzgfwithyvmwctesnqs.supabase.co",
-                supabaseKey = "sb_publishable_cxq8QZp9BDtjE4G5qiPCFA_lUZ4Cbdh"
-            ) {
-                install(Postgrest)
-                install(Realtime)
-            }
-        }.onFailure {
-            logger.error("Supabase initialization failed; falling back to local/default config", it)
-        }.getOrNull()
+        supabasePollExecutor?.shutdownNow()
+        supabasePollExecutor = Executors.newSingleThreadScheduledExecutor()
 
-        if (client == null) {
+        val executor = supabasePollExecutor
+        if (executor == null) {
+            logger.warn("Supabase poll executor could not be created; using local/default values")
             initialSupabaseSyncComplete = true
-            logDebug("Supabase disabled due to runtime compatibility issue; continuing with local/default values")
             return
         }
 
-        supabaseClient = client
-        logDebug("Supabase client initialized")
-
-        launchSupabaseJob {
-            runCatching {
-                fetchConfigFromSupabase(client)?.let {
-                    config = it
-                    logDebug("Initial config fetched from Supabase: configId=${config.id}, petType=${config.petType}, debug=${config.debug}")
-                }
-
-                val fetchedRules = fetchRulesFromSupabase(client)
-                if (fetchedRules.isNotEmpty()) {
-                    rules = fetchedRules
-                    logDebug("Initial rules fetched from Supabase: ${rules.size}")
-                }
-
-                val fetchedWhitelist = fetchWhitelistFromSupabase(client)
-                if (fetchedWhitelist.isNotEmpty()) {
-                    whitelist = fetchedWhitelist
-                    logDebug("Initial whitelist fetched from Supabase: ${whitelist.size}")
-                }
-
-                val fetchedPetWords = fetchPetWordsFromSupabase(client)
-                if (fetchedPetWords.isNotEmpty()) {
-                    petWords = fetchedPetWords
-                    logDebug("Initial pet words fetched from Supabase: ${petWords.size}")
-                }
-
-                setupRealtimeSync(client)
-            }.onFailure {
-                logger.error("Supabase initial sync failed; continuing with local/default values", it)
-            }
-
+        executor.execute {
+            refreshFromSupabase("initial")
             initialSupabaseSyncComplete = true
-            logDebug("Initial Supabase sync complete (or fallback active)")
+            setupSupabasePolling()
+            logDebug("Initial Supabase sync complete")
         }
     }
 
@@ -516,20 +436,8 @@ class KeyIntercept : Plugin() {
     override fun stop(context: Context) {
         patcher.unpatchAll()
 
-        val channelsToClose = realtimeChannels.toList()
-        realtimeChannels.clear()
-
-        launchSupabaseJob {
-            channelsToClose.forEach { channel ->
-                runCatching { channel.unsubscribe() }
-                    .onFailure { logger.error("Failed to unsubscribe realtime channel ${channel.topic}", it) }
-            }
-            logDebug("Supabase realtime channels unsubscribed")
-        }
-
-        supabaseJobs.toList().forEach { it.cancel() }
-        supabaseJobs.clear()
-        supabaseClient = null
+        supabasePollExecutor?.shutdownNow()
+        supabasePollExecutor = null
         initialSupabaseSyncComplete = false
     }
 
