@@ -735,7 +735,7 @@ class KeyIntercept : Plugin() {
             val value = raw as? String ?: continue
             if (value.isEmpty()) continue
 
-            val updated = alterMessage(target, value)
+            val updated = transformOutgoingString(target, value, "$sourceName.$fieldName")
             if (updated == value) continue
 
             if (setFieldValue(target, fieldName, updated)) {
@@ -767,7 +767,7 @@ class KeyIntercept : Plugin() {
             }.getOrNull() as? String ?: continue
             if (currentValue.isEmpty()) continue
 
-            val updated = alterMessage(target, currentValue)
+            val updated = transformOutgoingString(target, currentValue, "$sourceName.$fieldName (fallback)")
             if (updated == currentValue) continue
 
             val wrote = runCatching {
