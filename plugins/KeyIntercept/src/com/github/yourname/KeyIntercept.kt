@@ -4,7 +4,10 @@ import android.content.Context
 import com.aliucord.annotations.AliucordPlugin
 import com.aliucord.entities.Plugin
 import com.aliucord.patcher.Hook
+import com.aliucord.utils.ChannelUtils
+import com.aliucord.wrappers.ChannelWrapper
 import com.discord.utilities.messagesend.MessageQueue
+import com.discord.stores.StoreStream
 import de.robv.android.xposed.XC_MethodHook
 import java.util.Collections
 import java.util.Date
@@ -14,6 +17,13 @@ import kotlin.random.Random
 
 @AliucordPlugin(requiresRestart = false)
 class KeyIntercept : Plugin() {
+    private data class ConversationContext(
+        val channelId: Long?,
+        val channelName: String,
+        val dmName: String,
+        val serverName: String
+    )
+
     private companion object {
         const val CONTENT_FIELD = "content"
         const val MESSAGE_FIELD = "message"
@@ -417,22 +427,110 @@ class KeyIntercept : Plugin() {
         return word.startsWith("http://") || word.startsWith("https://") || word.startsWith("www.")
     }
 
-    private fun alterMessage(source: Any, content: String): String {
-        val channelName = getFieldValue(source, "channelName") as? String ?: "Unknown Channel"
-        val dmName = getFieldValue(source, "recipientName") as? String ?: "Unknown DM"
-        val serverName = getFieldValue(source, "guildName") as? String ?: "Unknown Server"
+    private fun parseLongLike(value: Any?): Long? {
+        return when (value) {
+            is Long -> value
+            is Int -> value.toLong()
+            is Short -> value.toLong()
+            is String -> value.toLongOrNull()
+            else -> null
+        }
+    }
 
-        val nameToCheck = when {
-            channelName != "Unknown Channel" -> channelName
-            dmName != "Unknown DM" -> dmName
-            else -> serverName
+    private fun readLongField(target: Any, vararg fieldNames: String): Long? {
+        for (fieldName in fieldNames) {
+            val parsed = parseLongLike(getFieldValue(target, fieldName))
+            if (parsed != null) return parsed
+        }
+        return null
+    }
+
+    private fun resolveChannelId(source: Any): Long? {
+        readLongField(source, "channelId", "channel_id")?.let { return it }
+
+        val sourceChannel = getFieldValue(source, "channel")
+        if (sourceChannel != null) {
+            readLongField(sourceChannel, "id", "channelId", "channel_id")?.let { return it }
         }
 
+        val messageObj = getFieldValue(source, MESSAGE_FIELD)
+        if (messageObj != null) {
+            readLongField(messageObj, "channelId", "channel_id")?.let { return it }
+
+            val messageChannel = getFieldValue(messageObj, "channel")
+            if (messageChannel != null) {
+                readLongField(messageChannel, "id", "channelId", "channel_id")?.let { return it }
+            }
+        }
+
+        return null
+    }
+
+    private fun resolveConversationContext(source: Any): ConversationContext {
+        val channelId = resolveChannelId(source)
+        if (channelId == null) {
+            logDebug("Could not resolve channelId from ${source.javaClass.name}")
+            return ConversationContext(null, "Unknown Channel", "Unknown DM", "Unknown Server")
+        }
+
+        val channel = StoreStream.getChannels().getChannel(channelId)
+        if (channel == null) {
+            logDebug("StoreStream returned null channel for channelId=$channelId")
+            return ConversationContext(channelId, "Unknown Channel", "Unknown DM", "Unknown Server")
+        }
+
+        val channelWrapper = ChannelWrapper(channel)
+        val channelName = runCatching { ChannelUtils.getDisplayName(channel) }
+            .getOrNull()
+            ?.takeIf { it.isNotBlank() }
+            ?: "Unknown Channel"
+
+        val isDm = runCatching { channelWrapper.isDM() }.getOrDefault(false)
+        val dmName = if (isDm) {
+            channelName.takeIf { it != "Unknown Channel" } ?: "Unknown DM"
+        } else {
+            "Unknown DM"
+        }
+
+        val guildId = runCatching { channelWrapper.guildId }.getOrNull()
+        val serverName = if (guildId != null && guildId != 0L) {
+            val guild = StoreStream.getGuilds().getGuild(guildId)
+            (guild?.let {
+                (getFieldValue(it, "name") as? String)
+                    ?: (getFieldValue(it, "guildName") as? String)
+            }) ?: "Unknown Server"
+        } else {
+            "Unknown Server"
+        }
+
+        return ConversationContext(channelId, channelName, dmName, serverName)
+    }
+
+    private fun isWhitelisted(context: ConversationContext): Boolean {
+        val names = listOf(context.channelName, context.dmName, context.serverName)
+            .filter { it != "Unknown Channel" && it != "Unknown DM" && it != "Unknown Server" }
+
+        if (names.isEmpty()) {
+            logDebug("No resolvable context names found for whitelist check")
+            return false
+        }
+
+        val matched = names.any(::checkWhitelist)
+        logDebug("Whitelist names considered=$names matched=$matched")
+        return matched
+    }
+
+    private fun alterMessage(source: Any, content: String): String {
+        val context = resolveConversationContext(source)
+        val channelName = context.channelName
+        val dmName = context.dmName
+        val serverName = context.serverName
+
         logDebug(
-            "alterMessage source=${source.javaClass.simpleName}, channel='$channelName', dm='$dmName', guild='$serverName', chosen='$nameToCheck', input='${preview(content)}'"
+            "alterMessage source=${source.javaClass.simpleName}, channelId=${context.channelId}, channel='$channelName', dm='$dmName', guild='$serverName', input='${preview(content)}'"
         )
 
-        if (!checkWhitelist(nameToCheck)) {
+        if (!isWhitelisted(context)) {
             logDebug("Skipping mutation because target is not whitelisted")
             return content
         }
