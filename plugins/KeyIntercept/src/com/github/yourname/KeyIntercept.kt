@@ -421,45 +421,59 @@ class KeyIntercept : Plugin() {
             "Initial config: debug=${config.debug}, rules=${rules.size}, whitelist=${whitelist.map { it.serverName }}, petWords=${petWords.size}"
         )
 
-        val client = createSupabaseClient(
-            supabaseUrl = "https://qjzgfwithyvmwctesnqs.supabase.co",
-            supabaseKey = "sb_publishable_cxq8QZp9BDtjE4G5qiPCFA_lUZ4Cbdh"
-        ) {
-            install(Postgrest)
-            install(Realtime)
+        val client = runCatching {
+            createSupabaseClient(
+                supabaseUrl = "https://qjzgfwithyvmwctesnqs.supabase.co",
+                supabaseKey = "sb_publishable_cxq8QZp9BDtjE4G5qiPCFA_lUZ4Cbdh"
+            ) {
+                install(Postgrest)
+                install(Realtime)
+            }
+        }.onFailure {
+            logger.error("Supabase initialization failed; falling back to local/default config", it)
+        }.getOrNull()
+
+        if (client == null) {
+            initialSupabaseSyncComplete = true
+            logDebug("Supabase disabled due to runtime compatibility issue; continuing with local/default values")
+            return
         }
 
         supabaseClient = client
         logDebug("Supabase client initialized")
 
         launchSupabaseJob {
-            fetchConfigFromSupabase(client)?.let {
-                config = it
-                logDebug("Initial config fetched from Supabase: configId=${config.id}, petType=${config.petType}, debug=${config.debug}")
-            }
+            runCatching {
+                fetchConfigFromSupabase(client)?.let {
+                    config = it
+                    logDebug("Initial config fetched from Supabase: configId=${config.id}, petType=${config.petType}, debug=${config.debug}")
+                }
 
-            val fetchedRules = fetchRulesFromSupabase(client)
-            if (fetchedRules.isNotEmpty()) {
-                rules = fetchedRules
-                logDebug("Initial rules fetched from Supabase: ${rules.size}")
-            }
+                val fetchedRules = fetchRulesFromSupabase(client)
+                if (fetchedRules.isNotEmpty()) {
+                    rules = fetchedRules
+                    logDebug("Initial rules fetched from Supabase: ${rules.size}")
+                }
 
-            val fetchedWhitelist = fetchWhitelistFromSupabase(client)
-            if (fetchedWhitelist.isNotEmpty()) {
-                whitelist = fetchedWhitelist
-                logDebug("Initial whitelist fetched from Supabase: ${whitelist.size}")
-            }
+                val fetchedWhitelist = fetchWhitelistFromSupabase(client)
+                if (fetchedWhitelist.isNotEmpty()) {
+                    whitelist = fetchedWhitelist
+                    logDebug("Initial whitelist fetched from Supabase: ${whitelist.size}")
+                }
 
-            val fetchedPetWords = fetchPetWordsFromSupabase(client)
-            if (fetchedPetWords.isNotEmpty()) {
-                petWords = fetchedPetWords
-                logDebug("Initial pet words fetched from Supabase: ${petWords.size}")
+                val fetchedPetWords = fetchPetWordsFromSupabase(client)
+                if (fetchedPetWords.isNotEmpty()) {
+                    petWords = fetchedPetWords
+                    logDebug("Initial pet words fetched from Supabase: ${petWords.size}")
+                }
+
+                setupRealtimeSync(client)
+            }.onFailure {
+                logger.error("Supabase initial sync failed; continuing with local/default values", it)
             }
 
             initialSupabaseSyncComplete = true
-            logDebug("Initial Supabase sync complete")
-
-            setupRealtimeSync(client)
+            logDebug("Initial Supabase sync complete (or fallback active)")
         }
     }
 
