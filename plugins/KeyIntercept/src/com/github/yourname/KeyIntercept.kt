@@ -8,11 +8,9 @@ import com.aliucord.utils.ChannelUtils
 import com.aliucord.wrappers.ChannelWrapper
 import com.discord.stores.StoreStream
 import com.discord.utilities.messagesend.MessageQueue
-import kotlinx.serialization.SerialName
-import kotlinx.serialization.Serializable
-import kotlinx.serialization.decodeFromString
-import kotlinx.serialization.json.Json
 import de.robv.android.xposed.XC_MethodHook
+import org.json.JSONArray
+import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URLEncoder
 import java.net.URL
@@ -133,7 +131,6 @@ class KeyIntercept : Plugin() {
 
     private val wrappedCallbacks = Collections.newSetFromMap(IdentityHashMap<Any, Boolean>())
     private var supabasePollExecutor: ScheduledExecutorService? = null
-    private val json = Json { ignoreUnknownKeys = true }
     @Volatile
     private var initialSupabaseSyncComplete = false
 
@@ -184,108 +181,80 @@ class KeyIntercept : Plugin() {
         }
     }
 
-    @Serializable
-    private data class SupabaseKeyInterceptConfig(
-        val id: Long = 0,
-        @SerialName("created_at") val createdAt: Long = 0,
-        @SerialName("updated_at") val updatedAt: Long = 0,
-        @SerialName("rules_end") val rulesEnd: Long = 0,
-        @SerialName("gag_end") val gagEnd: Long = 0,
-        @SerialName("pet_end") val petEnd: Long = 0,
-        @SerialName("pet_amount") val petAmount: Float = 0f,
-        @SerialName("pet_type") val petType: Long = 0,
-        @SerialName("bimbo_end") val bimboEnd: Long = 0,
-        @SerialName("horny_end") val hornyEnd: Long = 0,
-        @SerialName("bimbo_word_length") val bimboWordLength: Int = 0,
-        @SerialName("drone_end") val droneEnd: Long = 0,
-        @SerialName("drone_header_text") val droneHeaderText: String = "",
-        @SerialName("drone_footer_text") val droneFooterText: String = "",
-        @SerialName("drone_health") val droneHealth: Float = 0f,
-        @SerialName("uwu_end") val uwuEnd: Long = 0,
-        val debug: Boolean = false
-    )
-
-    @Serializable
-    private data class SupabaseRule(
-        val id: Long = 0,
-        @SerialName("created_at") val createdAt: Long = 0,
-        @SerialName("updated_at") val updatedAt: Long = 0,
-        @SerialName("config_id") val configId: Long = 0,
-        @SerialName("rule_regex") val ruleRegex: String = "",
-        @SerialName("rule_replacement") val ruleReplacement: String = "",
-        val enabled: Boolean = false,
-        @SerialName("chance_to_apply") val chanceToApply: Float = 0f
-    )
-
-    @Serializable
-    private data class SupabaseServerWhitelistItem(
-        val id: Long = 0,
-        @SerialName("config_id") val configId: Long = 0,
-        @SerialName("server_name") val serverName: String = ""
-    )
-
-    @Serializable
-    private data class SupabasePetWord(
-        val id: Long = 0,
-        @SerialName("pet_type") val petType: Long = 0,
-        val word: String = ""
-    )
-
-    private fun SupabaseKeyInterceptConfig.toModel(): KeyInterceptConfig {
-        return KeyInterceptConfig(
-            id = id,
-            createdAt = createdAt,
-            updatedAt = updatedAt,
-            rulesEnd = rulesEnd,
-            gagEnd = gagEnd,
-            petEnd = petEnd,
-            petAmount = petAmount,
-            petType = petType,
-            bimboEnd = bimboEnd,
-            hornyEnd = hornyEnd,
-            bimboWordLength = bimboWordLength,
-            droneEnd = droneEnd,
-            droneHeaderText = droneHeaderText,
-            droneFooterText = droneFooterText,
-            droneHealth = droneHealth,
-            uwuEnd = uwuEnd,
-            debug = debug
-        )
+    private fun JSONObject.readLong(key: String, default: Long = 0L): Long {
+        if (!has(key) || isNull(key)) return default
+        val value = get(key)
+        return when (value) {
+            is Number -> value.toLong()
+            is String -> value.toLongOrNull() ?: default
+            else -> default
+        }
     }
 
-    private fun SupabaseRule.toModel(): Rule {
-        return Rule(
-            id = id,
-            createdAt = createdAt,
-            updatedAt = updatedAt,
-            configId = configId,
-            ruleRegex = ruleRegex,
-            ruleReplacement = ruleReplacement,
-            enabled = enabled,
-            chanceToApply = chanceToApply
-        )
+    private fun JSONObject.readInt(key: String, default: Int = 0): Int {
+        if (!has(key) || isNull(key)) return default
+        val value = get(key)
+        return when (value) {
+            is Number -> value.toInt()
+            is String -> value.toIntOrNull() ?: default
+            else -> default
+        }
     }
 
-    private fun SupabaseServerWhitelistItem.toModel(): ServerWhitelistItem {
-        return ServerWhitelistItem(
-            id = id,
-            configId = configId,
-            serverName = serverName
-        )
+    private fun JSONObject.readFloat(key: String, default: Float = 0f): Float {
+        if (!has(key) || isNull(key)) return default
+        val value = get(key)
+        return when (value) {
+            is Number -> value.toFloat()
+            is String -> value.toFloatOrNull() ?: default
+            else -> default
+        }
     }
 
-    private fun SupabasePetWord.toModel(): PetWord {
-        return PetWord(
-            id = id,
-            petType = petType,
-            word = word
-        )
+    private fun JSONObject.readBoolean(key: String, default: Boolean = false): Boolean {
+        if (!has(key) || isNull(key)) return default
+        val value = get(key)
+        return when (value) {
+            is Boolean -> value
+            is String -> value.equals("true", ignoreCase = true)
+            is Number -> value.toInt() != 0
+            else -> default
+        }
+    }
+
+    private fun JSONObject.readString(key: String, default: String = ""): String {
+        if (!has(key) || isNull(key)) return default
+        return runCatching { getString(key) }.getOrElse { default }
     }
 
     private fun fetchConfigFromSupabase(): KeyInterceptConfig? {
         return runCatching {
             val body = supabaseGet("Config", mapOf("id" to config.id.toString()))
-            json.decodeFromString<List<SupabaseKeyInterceptConfig>>(body).firstOrNull()?.toModel()
+            val arr = JSONArray(body)
+            if (arr.length() == 0) {
+                null
+            } else {
+                val obj = arr.getJSONObject(0)
+                KeyInterceptConfig(
+                    id = obj.readLong("id", config.id),
+                    createdAt = obj.readLong("created_at"),
+                    updatedAt = obj.readLong("updated_at"),
+                    rulesEnd = obj.readLong("rules_end"),
+                    gagEnd = obj.readLong("gag_end"),
+                    petEnd = obj.readLong("pet_end"),
+                    petAmount = obj.readFloat("pet_amount"),
+                    petType = obj.readLong("pet_type", config.petType),
+                    bimboEnd = obj.readLong("bimbo_end"),
+                    hornyEnd = obj.readLong("horny_end"),
+                    bimboWordLength = obj.readInt("bimbo_word_length"),
+                    droneEnd = obj.readLong("drone_end"),
+                    droneHeaderText = obj.readString("drone_header_text"),
+                    droneFooterText = obj.readString("drone_footer_text"),
+                    droneHealth = obj.readFloat("drone_health"),
+                    uwuEnd = obj.readLong("uwu_end"),
+                    debug = obj.readBoolean("debug")
+                )
+            }
         }.onFailure {
             logger.error("Failed to fetch config from Supabase", it)
         }.getOrNull()
@@ -294,7 +263,24 @@ class KeyIntercept : Plugin() {
     private fun fetchRulesFromSupabase(): List<Rule> {
         return runCatching {
             val body = supabaseGet("Rule", mapOf("config_id" to config.id.toString()))
-            json.decodeFromString<List<SupabaseRule>>(body).map { it.toModel() }
+            val arr = JSONArray(body)
+            buildList {
+                for (i in 0 until arr.length()) {
+                    val obj = arr.getJSONObject(i)
+                    add(
+                        Rule(
+                            id = obj.readLong("id"),
+                            createdAt = obj.readLong("created_at"),
+                            updatedAt = obj.readLong("updated_at"),
+                            configId = obj.readLong("config_id"),
+                            ruleRegex = obj.readString("rule_regex"),
+                            ruleReplacement = obj.readString("rule_replacement"),
+                            enabled = obj.readBoolean("enabled"),
+                            chanceToApply = obj.readFloat("chance_to_apply")
+                        )
+                    )
+                }
+            }
         }.onFailure {
             logger.error("Failed to fetch rules from Supabase", it)
         }.getOrDefault(emptyList())
@@ -303,7 +289,19 @@ class KeyIntercept : Plugin() {
     private fun fetchWhitelistFromSupabase(): List<ServerWhitelistItem> {
         return runCatching {
             val body = supabaseGet("Server_Whitelist_Items", mapOf("config_id" to config.id.toString()))
-            json.decodeFromString<List<SupabaseServerWhitelistItem>>(body).map { it.toModel() }
+            val arr = JSONArray(body)
+            buildList {
+                for (i in 0 until arr.length()) {
+                    val obj = arr.getJSONObject(i)
+                    add(
+                        ServerWhitelistItem(
+                            id = obj.readLong("id"),
+                            configId = obj.readLong("config_id"),
+                            serverName = obj.readString("server_name")
+                        )
+                    )
+                }
+            }
         }.onFailure {
             logger.error("Failed to fetch whitelist from Supabase", it)
         }.getOrDefault(emptyList())
@@ -312,7 +310,19 @@ class KeyIntercept : Plugin() {
     private fun fetchPetWordsFromSupabase(): List<PetWord> {
         return runCatching {
             val body = supabaseGet("Pet_Words", mapOf("pet_type" to config.petType.toString()))
-            json.decodeFromString<List<SupabasePetWord>>(body).map { it.toModel() }
+            val arr = JSONArray(body)
+            buildList {
+                for (i in 0 until arr.length()) {
+                    val obj = arr.getJSONObject(i)
+                    add(
+                        PetWord(
+                            id = obj.readLong("id"),
+                            petType = obj.readLong("pet_type"),
+                            word = obj.readString("word")
+                        )
+                    )
+                }
+            }
         }.onFailure {
             logger.error("Failed to fetch pet words from Supabase", it)
         }.getOrDefault(emptyList())
