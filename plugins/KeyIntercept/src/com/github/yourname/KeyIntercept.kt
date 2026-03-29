@@ -141,7 +141,7 @@ class KeyIntercept : Plugin() {
     )
 
     private val wrappedCallbacks = Collections.newSetFromMap(IdentityHashMap<Any, Boolean>())
-    private val supabaseScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private var supabaseScope: CoroutineScope? = null
     private val supabaseJobs = Collections.synchronizedList(mutableListOf<Job>())
     private val realtimeChannels = Collections.synchronizedList(mutableListOf<RealtimeChannel>())
     private var supabaseClient: SupabaseClient? = null
@@ -151,7 +151,13 @@ class KeyIntercept : Plugin() {
     }
 
     private fun launchSupabaseJob(block: suspend CoroutineScope.() -> Unit) {
-        val job = supabaseScope.launch(block = block)
+        val scope = supabaseScope
+        if (scope == null) {
+            logger.warn("Supabase scope is not initialized; skipping async job")
+            return
+        }
+
+        val job = scope.launch(block = block)
         supabaseJobs += job
     }
 
@@ -312,6 +318,12 @@ class KeyIntercept : Plugin() {
         realtimeChannels += whitelistChannel
         realtimeChannels += petWordsChannel
 
+        val scope = supabaseScope
+        if (scope == null) {
+            logger.warn("Supabase scope is not initialized; realtime sync will not start")
+            return
+        }
+
         supabaseJobs += configChannel.postgresChangeFlow<PostgresAction>(schema = "public")
             .onEach { action ->
                 logDebug("Supabase config change received: ${action::class.simpleName}")
@@ -339,7 +351,7 @@ class KeyIntercept : Plugin() {
                     }
                 }
             }
-            .launchIn(supabaseScope)
+            .launchIn(scope)
 
         supabaseJobs += rulesChannel.postgresChangeFlow<PostgresAction>(schema = "public")
             .onEach { action ->
@@ -357,7 +369,7 @@ class KeyIntercept : Plugin() {
                     else -> {}
                 }
             }
-            .launchIn(supabaseScope)
+            .launchIn(scope)
 
         supabaseJobs += whitelistChannel.postgresChangeFlow<PostgresAction>(schema = "public")
             .onEach { action ->
@@ -375,7 +387,7 @@ class KeyIntercept : Plugin() {
                     else -> {}
                 }
             }
-            .launchIn(supabaseScope)
+            .launchIn(scope)
 
         supabaseJobs += petWordsChannel.postgresChangeFlow<PostgresAction>(schema = "public")
             .onEach { action ->
@@ -393,7 +405,7 @@ class KeyIntercept : Plugin() {
                     else -> {}
                 }
             }
-            .launchIn(supabaseScope)
+            .launchIn(scope)
 
         launchSupabaseJob {
             runCatching { configChannel.subscribe() }.onFailure { logger.error("Failed to subscribe to config channel", it) }
@@ -417,6 +429,9 @@ class KeyIntercept : Plugin() {
 
     override fun load(context: Context) {
         logger.info("KeyIntercept loaded")
+        if (supabaseScope == null) {
+            supabaseScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        }
         logDebug(
             "Initial config: debug=${config.debug}, rules=${rules.size}, whitelist=${whitelist.map { it.serverName }}, petWords=${petWords.size}"
         )
@@ -513,7 +528,8 @@ class KeyIntercept : Plugin() {
         supabaseJobs.toList().forEach { it.cancel() }
         supabaseJobs.clear()
         supabaseClient = null
-        supabaseScope.coroutineContext.cancelChildren()
+        supabaseScope?.coroutineContext?.cancelChildren()
+        supabaseScope = null
     }
 
     private fun mutateOutgoingData(candidate: Any): Boolean {
