@@ -14,7 +14,6 @@ import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URLEncoder
 import java.net.URL
-import java.lang.reflect.Modifier
 import java.util.Collections
 import java.util.Date
 import java.util.IdentityHashMap
@@ -137,7 +136,6 @@ class KeyIntercept : Plugin() {
     private val wrappedCallbacks = Collections.newSetFromMap(IdentityHashMap<Any, Boolean>())
     private var supabasePollExecutor: ScheduledExecutorService? = null
     private val localDebugOverride = true
-    private val loggedSendFieldShapes = Collections.newSetFromMap(IdentityHashMap<Any, Boolean>())
     @Volatile
     private var initialSupabaseSyncComplete = false
 
@@ -645,10 +643,6 @@ class KeyIntercept : Plugin() {
         logDebug("Inspecting candidate ${candidate.javaClass.name}")
         var changed = false
 
-        if (wrapPreprocessingCallback(candidate)) {
-            changed = true
-        }
-
         val nestedMessage = getFieldValue(candidate, MESSAGE_FIELD)
         if (nestedMessage == null) {
             logDebug("No nested '$MESSAGE_FIELD' field on ${candidate.javaClass.simpleName}")
@@ -665,71 +659,6 @@ class KeyIntercept : Plugin() {
             changed = true
         }
 
-        if (mutateAllStringFieldsDeep(candidate)) {
-            changed = true
-        }
-
-        return changed
-    }
-
-    private fun mutateAllStringFieldsDeep(root: Any): Boolean {
-        val className = root.javaClass.name
-        val simpleName = root.javaClass.simpleName
-        val looksLikeSendPayload =
-            className.contains("messagesend", ignoreCase = true) ||
-                className.contains("MessageRequest", ignoreCase = true) ||
-                simpleName.equals("Send", ignoreCase = true)
-        if (!looksLikeSendPayload) return false
-
-        val visited = Collections.newSetFromMap(IdentityHashMap<Any, Boolean>())
-        var changed = false
-
-        fun walk(node: Any?, depth: Int) {
-            if (node == null || depth > 3) return
-            if (!visited.add(node)) return
-
-            var currentClass: Class<*>? = node.javaClass
-            while (currentClass != null && currentClass != Any::class.java) {
-                for (field in currentClass.declaredFields) {
-                    if (Modifier.isStatic(field.modifiers)) continue
-
-                    val value = runCatching {
-                        field.isAccessible = true
-                        field.get(node)
-                    }.getOrNull() ?: continue
-
-                    if (value is String) {
-                        if (value.isEmpty()) continue
-                        val updated = alterMessage(root, value)
-                        if (updated != value) {
-                            val wrote = runCatching {
-                                field.isAccessible = true
-                                field.set(node, updated)
-                                true
-                            }.getOrDefault(false)
-                            if (wrote) {
-                                changed = true
-                                logDebug("Deep-mutation updated ${node.javaClass.simpleName}.${field.name}")
-                            }
-                        }
-                        continue
-                    }
-
-                    val fieldType = value.javaClass
-                    val skipType =
-                        fieldType.isPrimitive ||
-                            fieldType.isEnum ||
-                            fieldType.name.startsWith("java.") ||
-                            fieldType.name.startsWith("kotlin.")
-                    if (!skipType) {
-                        walk(value, depth + 1)
-                    }
-                }
-                currentClass = currentClass.superclass
-            }
-        }
-
-        walk(root, 0)
         return changed
     }
 
@@ -747,8 +676,7 @@ class KeyIntercept : Plugin() {
             "rawContent",
             "textContent",
             "text",
-            "body",
-            "message"
+            "body"
         )
 
         var changed = false
@@ -766,61 +694,7 @@ class KeyIntercept : Plugin() {
             }
         }
 
-        // Fallback: discover and mutate likely text-carrying String fields on Send-like objects.
-        val allFields = getAllDeclaredFields(target)
-        val discovered = ArrayList<String>()
-
-        for (field in allFields) {
-            val fieldName = field.name
-            val value = runCatching {
-                field.isAccessible = true
-                field.get(target)
-            }.getOrNull() as? String ?: continue
-
-            if (value.isEmpty()) continue
-            discovered.add("$fieldName='${preview(value, 48)}'")
-
-            val lower = fieldName.lowercase()
-            val looksLikeIdOrMeta =
-                lower.contains("id") ||
-                    lower.contains("nonce") ||
-                    lower.contains("token") ||
-                    lower.contains("channel") ||
-                    lower.contains("guild") ||
-                    lower.contains("user") ||
-                    lower.contains("session") ||
-                    lower.contains("application")
-            if (looksLikeIdOrMeta) continue
-
-            val updated = alterMessage(target, value)
-            if (updated == value) continue
-
-            val wrote = runCatching {
-                field.isAccessible = true
-                field.set(target, updated)
-                true
-            }.getOrDefault(false)
-            if (wrote) {
-                changed = true
-                logger.info("Mutated $sourceName.$fieldName (discovered)")
-            }
-        }
-
-        if (loggedSendFieldShapes.add(target) && discovered.isNotEmpty()) {
-            logDebug("Discovered Send String fields: ${discovered.joinToString()}")
-        }
-
         return changed
-    }
-
-    private fun getAllDeclaredFields(target: Any): List<java.lang.reflect.Field> {
-        val out = ArrayList<java.lang.reflect.Field>()
-        var current: Class<*>? = target.javaClass
-        while (current != null && current != Any::class.java) {
-            out.addAll(current.declaredFields)
-            current = current.superclass
-        }
-        return out
     }
 
     private fun checkWhitelist(serverName: String): Boolean {
