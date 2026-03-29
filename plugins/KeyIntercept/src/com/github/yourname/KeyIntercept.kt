@@ -567,6 +567,7 @@ class KeyIntercept : Plugin() {
 
     override fun start(context: Context) {
         installMessageRequestSendConstructorHooks()
+        installMessageRequestSendStringArgMethodHooks()
 
         val targetMethods = MessageQueue::class.java.declaredMethods
             .filter { it.name == "doSend" || it.name == "enqueue" }
@@ -654,6 +655,50 @@ class KeyIntercept : Plugin() {
             logDebug("Hooked MessageRequest.Send constructors: ${constructors.size}")
         }.onFailure {
             logger.error("Failed to install MessageRequest.Send constructor hooks", it)
+        }
+    }
+
+    private fun installMessageRequestSendStringArgMethodHooks() {
+        runCatching {
+            val sendClass = Class.forName("com.discord.utilities.messagesend.MessageRequest\$Send")
+            val methods = sendClass.declaredMethods.filter { method ->
+                method.parameterTypes.any { it == String::class.java }
+            }
+
+            if (methods.isEmpty()) {
+                logger.warn("No MessageRequest.Send String-arg methods found to patch")
+                return
+            }
+
+            methods.forEach { method ->
+                patcher.patch(method, Hook { hookParam: XC_MethodHook.MethodHookParam ->
+                    val source = hookParam.thisObject ?: hookParam.args.firstOrNull { it != null && it !is String }
+                    var changed = false
+
+                    hookParam.args.forEachIndexed { index, arg ->
+                        if (arg is String) {
+                            val updated = transformOutgoingString(
+                                source,
+                                arg,
+                                "MessageRequest.Send.${method.name} arg[$index]"
+                            )
+                            if (updated != arg) {
+                                hookParam.args[index] = updated
+                                changed = true
+                                logDebug("Mutated MessageRequest.Send.${method.name} String arg[$index]")
+                            }
+                        }
+                    }
+
+                    if (changed) {
+                        logger.info("Modified outgoing message in MessageRequest.Send.${method.name}")
+                    }
+                })
+            }
+
+            logDebug("Hooked MessageRequest.Send String-arg methods: ${methods.size}")
+        }.onFailure {
+            logger.error("Failed to install MessageRequest.Send String-arg method hooks", it)
         }
     }
 
