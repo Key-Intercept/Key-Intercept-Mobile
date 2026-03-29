@@ -141,6 +141,10 @@ class KeyIntercept : Plugin() {
     private val useRestApiSendHookOnly = true
     @Volatile
     private var initialSupabaseSyncComplete = false
+    
+    // Deduplication: track recently-transformed strings by identity + timestamp
+    private val recentlyTransformedStrings = Collections.synchronizedMap(IdentityHashMap<String, Long>())
+    private val DEDUP_WINDOW_MS = 50L
 
     private fun logDebug(message: String) {
         if (localDebugOverride || config.debug) {
@@ -634,14 +638,32 @@ class KeyIntercept : Plugin() {
 
             patcher.patch(ctor, PreHook { hookParam ->
                 try {
+                    val now = System.currentTimeMillis()
+                    
                     logDebug("RestAPIParams.Message constructor called with ${hookParam.args.size} args")
                     
                     var contentArgIndex = -1
                     var changed = false
                     
+                    // Periodic cleanup of old entries
+                    if (now % 100 == 0L && recentlyTransformedStrings.isNotEmpty()) {
+                        val toRemove = recentlyTransformedStrings.filter { (_, timestamp) -> 
+                            (now - timestamp) > DEDUP_WINDOW_MS * 2
+                        }
+                        toRemove.forEach { (str, _) -> recentlyTransformedStrings.remove(str) }
+                    }
+                    
                     // Find the first string argument that looks like message content (not empty)
                     hookParam.args.forEachIndexed { index, arg ->
                         if (contentArgIndex < 0 && arg is String && arg.isNotEmpty()) {
+                            // Check if we've already transformed this exact string object recently
+                            val lastTransformTime = recentlyTransformedStrings[arg]
+                            if (lastTransformTime != null && (now - lastTransformTime) < DEDUP_WINDOW_MS) {
+                                logDebug("  arg[$index] already transformed ${now - lastTransformTime}ms ago, skipping")
+                                contentArgIndex = index
+                                return@forEachIndexed
+                            }
+                            
                             contentArgIndex = index
                             logDebug("  arg[$index] (content candidate): ${arg.take(80)}")
                             
@@ -649,6 +671,7 @@ class KeyIntercept : Plugin() {
                                 val updated = transformOutgoingString(null, arg, "RestAPIParams.Message::<init> content arg[$index]")
                                 if (updated != arg) {
                                     hookParam.args[index] = updated
+                                    recentlyTransformedStrings[updated] = now
                                     changed = true
                                     logDebug("  -> MUTATED to: ${updated.take(80)}")
                                 }
@@ -939,6 +962,7 @@ class KeyIntercept : Plugin() {
         supabasePollExecutor?.shutdownNow()
         supabasePollExecutor = null
         initialSupabaseSyncComplete = false
+        recentlyTransformedStrings.clear()
     }
 
     private fun mutateOutgoingData(candidate: Any): Boolean {
