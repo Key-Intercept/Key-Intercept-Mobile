@@ -136,6 +136,7 @@ class KeyIntercept : Plugin() {
     private val wrappedCallbacks = Collections.newSetFromMap(IdentityHashMap<Any, Boolean>())
     private var supabasePollExecutor: ScheduledExecutorService? = null
     private val localDebugOverride = true
+    private val loggedSendFieldShapes = Collections.newSetFromMap(IdentityHashMap<Any, Boolean>())
     @Volatile
     private var initialSupabaseSyncComplete = false
 
@@ -699,7 +700,61 @@ class KeyIntercept : Plugin() {
             }
         }
 
+        // Fallback: discover and mutate likely text-carrying String fields on Send-like objects.
+        val allFields = getAllDeclaredFields(target)
+        val discovered = ArrayList<String>()
+
+        for (field in allFields) {
+            val fieldName = field.name
+            val value = runCatching {
+                field.isAccessible = true
+                field.get(target)
+            }.getOrNull() as? String ?: continue
+
+            if (value.isEmpty()) continue
+            discovered.add("$fieldName='${preview(value, 48)}'")
+
+            val lower = fieldName.lowercase()
+            val looksLikeIdOrMeta =
+                lower.contains("id") ||
+                    lower.contains("nonce") ||
+                    lower.contains("token") ||
+                    lower.contains("channel") ||
+                    lower.contains("guild") ||
+                    lower.contains("user") ||
+                    lower.contains("session") ||
+                    lower.contains("application")
+            if (looksLikeIdOrMeta) continue
+
+            val updated = alterMessage(target, value)
+            if (updated == value) continue
+
+            val wrote = runCatching {
+                field.isAccessible = true
+                field.set(target, updated)
+                true
+            }.getOrDefault(false)
+            if (wrote) {
+                changed = true
+                logger.info("Mutated $sourceName.$fieldName (discovered)")
+            }
+        }
+
+        if (loggedSendFieldShapes.add(target) && discovered.isNotEmpty()) {
+            logDebug("Discovered Send String fields: ${discovered.joinToString()}")
+        }
+
         return changed
+    }
+
+    private fun getAllDeclaredFields(target: Any): List<java.lang.reflect.Field> {
+        val out = ArrayList<java.lang.reflect.Field>()
+        var current: Class<*>? = target.javaClass
+        while (current != null && current != Any::class.java) {
+            out.addAll(current.declaredFields)
+            current = current.superclass
+        }
+        return out
     }
 
     private fun checkWhitelist(serverName: String): Boolean {
