@@ -142,9 +142,9 @@ class KeyIntercept : Plugin() {
     @Volatile
     private var initialSupabaseSyncComplete = false
     
-    // Deduplication: track recently-transformed strings by identity + timestamp
-    private val recentlyTransformedStrings = Collections.synchronizedMap(IdentityHashMap<String, Long>())
-    private val DEDUP_WINDOW_MS = 50L
+    // Deduplication: track recently-transformed string CONTENT by value (not identity)
+    private val recentlyTransformedContent = Collections.synchronizedMap(HashMap<String, Long>())
+    private val DEDUP_WINDOW_MS = 100L
 
     private fun logDebug(message: String) {
         if (localDebugOverride || config.debug) {
@@ -645,33 +645,37 @@ class KeyIntercept : Plugin() {
                     var contentArgIndex = -1
                     var changed = false
                     
-                    // Periodic cleanup of old entries
-                    if (now % 100 == 0L && recentlyTransformedStrings.isNotEmpty()) {
-                        val toRemove = recentlyTransformedStrings.filter { (_, timestamp) -> 
+                    // Periodic cleanup of old entries (every 100 calls)
+                    if (now % 100 == 0L && recentlyTransformedContent.isNotEmpty()) {
+                        val toRemove = recentlyTransformedContent.filter { (_, timestamp) -> 
                             (now - timestamp) > DEDUP_WINDOW_MS * 2
                         }
-                        toRemove.forEach { (str, _) -> recentlyTransformedStrings.remove(str) }
+                        toRemove.forEach { (str, _) -> recentlyTransformedContent.remove(str) }
+                        if (toRemove.isNotEmpty()) {
+                            logDebug("Cleaned ${toRemove.size} old entries from dedup cache")
+                        }
                     }
                     
                     // Find the first string argument that looks like message content (not empty)
                     hookParam.args.forEachIndexed { index, arg ->
                         if (contentArgIndex < 0 && arg is String && arg.isNotEmpty()) {
-                            // Check if we've already transformed this exact string object recently
-                            val lastTransformTime = recentlyTransformedStrings[arg]
+                            contentArgIndex = index
+                            
+                            // Check if we've already transformed this exact STRING CONTENT recently
+                            val lastTransformTime = recentlyTransformedContent[arg]
                             if (lastTransformTime != null && (now - lastTransformTime) < DEDUP_WINDOW_MS) {
-                                logDebug("  arg[$index] already transformed ${now - lastTransformTime}ms ago, skipping")
-                                contentArgIndex = index
+                                logDebug("  arg[$index] content already transformed ${now - lastTransformTime}ms ago, SKIPPING")
                                 return@forEachIndexed
                             }
                             
-                            contentArgIndex = index
                             logDebug("  arg[$index] (content candidate): ${arg.take(80)}")
                             
                             try {
                                 val updated = transformOutgoingString(null, arg, "RestAPIParams.Message::<init> content arg[$index]")
                                 if (updated != arg) {
                                     hookParam.args[index] = updated
-                                    recentlyTransformedStrings[updated] = now
+                                    // Track the ORIGINAL content so we don't transform it again
+                                    recentlyTransformedContent[arg] = now
                                     changed = true
                                     logDebug("  -> MUTATED to: ${updated.take(80)}")
                                 }
@@ -962,7 +966,7 @@ class KeyIntercept : Plugin() {
         supabasePollExecutor?.shutdownNow()
         supabasePollExecutor = null
         initialSupabaseSyncComplete = false
-        recentlyTransformedStrings.clear()
+        recentlyTransformedContent.clear()
     }
 
     private fun mutateOutgoingData(candidate: Any): Boolean {
