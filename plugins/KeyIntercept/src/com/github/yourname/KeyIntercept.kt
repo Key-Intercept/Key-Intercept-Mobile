@@ -437,6 +437,12 @@ class KeyIntercept : Plugin() {
         }
     }
 
+    private fun asNonBlankString(value: Any?): String? {
+        val text = runCatching { value?.toString() }.getOrNull() ?: return null
+        val trimmed = text.trim()
+        return if (trimmed.isEmpty()) null else trimmed
+    }
+
     private fun readLongField(target: Any, vararg fieldNames: String): Long? {
         for (fieldName in fieldNames) {
             val parsed = parseLongLike(getFieldValue(target, fieldName))
@@ -480,10 +486,9 @@ class KeyIntercept : Plugin() {
         }
 
         val channelWrapper = ChannelWrapper(channel)
-        val channelName = runCatching { ChannelUtils.getDisplayName(channel) }
-            .getOrNull()
-            ?.takeIf { it.isNotBlank() }
-            ?: "Unknown Channel"
+        val channelName = asNonBlankString(
+            runCatching { ChannelUtils.getDisplayName(channel) as Any? }.getOrNull()
+        ) ?: "Unknown Channel"
 
         val isDm = runCatching { channelWrapper.isDM() }.getOrDefault(false)
         val dmName = if (isDm) {
@@ -496,8 +501,8 @@ class KeyIntercept : Plugin() {
         val serverName = if (guildId != null && guildId != 0L) {
             val guild = StoreStream.getGuilds().getGuild(guildId)
             (guild?.let {
-                (getFieldValue(it, "name") as? String)
-                    ?: (getFieldValue(it, "guildName") as? String)
+                asNonBlankString(getFieldValue(it, "name"))
+                    ?: asNonBlankString(getFieldValue(it, "guildName"))
             }) ?: "Unknown Server"
         } else {
             "Unknown Server"
