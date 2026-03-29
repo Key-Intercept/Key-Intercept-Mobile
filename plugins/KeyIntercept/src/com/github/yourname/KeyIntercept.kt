@@ -18,7 +18,6 @@ import io.github.jan.supabase.realtime.RealtimeChannel
 import io.github.jan.supabase.realtime.channel
 import io.github.jan.supabase.realtime.postgresChangeFlow
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
@@ -433,7 +432,7 @@ class KeyIntercept : Plugin() {
         logger.info("KeyIntercept loaded")
         initialSupabaseSyncComplete = false
         if (supabaseScope == null) {
-            supabaseScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+            supabaseScope = CoroutineScope(SupervisorJob())
         }
         logDebug(
             "Initial config: debug=${config.debug}, rules=${rules.size}, whitelist=${whitelist.map { it.serverName }}, petWords=${petWords.size}"
