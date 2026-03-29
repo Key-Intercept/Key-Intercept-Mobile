@@ -659,6 +659,46 @@ class KeyIntercept : Plugin() {
             changed = true
         }
 
+        if (mutateKnownSendTextFields(candidate, candidate.javaClass.simpleName)) {
+            changed = true
+        }
+
+        return changed
+    }
+
+    private fun mutateKnownSendTextFields(target: Any, sourceName: String): Boolean {
+        val className = target.javaClass.name
+        val simpleName = target.javaClass.simpleName
+        val looksLikeSendPayload =
+            className.contains("MessageRequest", ignoreCase = true) ||
+                simpleName.equals("Send", ignoreCase = true)
+
+        if (!looksLikeSendPayload) return false
+
+        val fieldCandidates = arrayOf(
+            "messageContent",
+            "rawContent",
+            "textContent",
+            "text",
+            "body",
+            "message"
+        )
+
+        var changed = false
+        for (fieldName in fieldCandidates) {
+            val raw = getFieldValue(target, fieldName)
+            val value = raw as? String ?: continue
+            if (value.isEmpty()) continue
+
+            val updated = alterMessage(target, value)
+            if (updated == value) continue
+
+            if (setFieldValue(target, fieldName, updated)) {
+                changed = true
+                logger.info("Mutated $sourceName.$fieldName")
+            }
+        }
+
         return changed
     }
 
