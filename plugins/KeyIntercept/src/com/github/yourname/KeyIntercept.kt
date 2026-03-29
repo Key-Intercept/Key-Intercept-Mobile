@@ -556,6 +556,10 @@ class KeyIntercept : Plugin() {
     }
 
     private fun checkWhitelist(serverName: String): Boolean {
+        if (whitelist.isEmpty() || whitelist.all { it.serverName == "Example Server" }) {
+            logDebug("Whitelist is empty, allowing all servers by default")
+            return true
+        }
         val allowed = whitelist.any { it.serverName == serverName }
         logDebug("Whitelist check for '$serverName' => $allowed (allowed=${whitelist.map { it.serverName }})")
         return allowed
