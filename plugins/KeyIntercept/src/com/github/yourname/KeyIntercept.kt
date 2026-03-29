@@ -132,11 +132,14 @@ class KeyIntercept : Plugin() {
 
     private val wrappedCallbacks = Collections.newSetFromMap(IdentityHashMap<Any, Boolean>())
     private var supabasePollExecutor: ScheduledExecutorService? = null
+    private val localDebugOverride = true
     @Volatile
     private var initialSupabaseSyncComplete = false
 
     private fun logDebug(message: String) {
-        if (config.debug) logger.info("[KeyIntercept][Debug] $message")
+        if (localDebugOverride || config.debug) {
+            logger.info("[KeyIntercept][Debug] $message")
+        }
     }
 
     private fun urlEncode(value: String): String {
