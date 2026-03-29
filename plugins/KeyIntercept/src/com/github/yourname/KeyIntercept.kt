@@ -17,6 +17,7 @@ import java.net.URL
 import java.util.Collections
 import java.util.Date
 import java.util.IdentityHashMap
+import java.util.ArrayList
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.TimeUnit
@@ -328,23 +329,23 @@ class KeyIntercept : Plugin() {
         return runCatching {
             val body = supabaseGet("Rules", mapOf("config_id" to config.id.toString()))
             val arr = JSONArray(body)
-            buildList {
-                for (i in 0 until arr.length()) {
-                    val obj = arr.getJSONObject(i)
-                    add(
-                        Rule(
-                            id = obj.readLong("id"),
-                            createdAt = obj.readLong("created_at"),
-                            updatedAt = obj.readLong("updated_at"),
-                            configId = obj.readLong("config_id"),
-                            ruleRegex = obj.readString("rule_regex"),
-                            ruleReplacement = obj.readString("rule_replacement"),
-                            enabled = obj.readBoolean("enabled"),
-                            chanceToApply = obj.readFloat("chance_to_apply")
-                        )
+            val out = ArrayList<Rule>(arr.length())
+            for (i in 0 until arr.length()) {
+                val obj = arr.getJSONObject(i)
+                out.add(
+                    Rule(
+                        id = obj.readLong("id"),
+                        createdAt = obj.readLong("created_at"),
+                        updatedAt = obj.readLong("updated_at"),
+                        configId = obj.readLong("config_id"),
+                        ruleRegex = obj.readString("rule_regex"),
+                        ruleReplacement = obj.readString("rule_replacement"),
+                        enabled = obj.readBoolean("enabled"),
+                        chanceToApply = obj.readFloat("chance_to_apply")
                     )
-                }
+                )
             }
+            out
         }.onFailure {
             logger.error("Failed to fetch rules from Supabase", it)
         }.getOrDefault(emptyList())
@@ -354,18 +355,18 @@ class KeyIntercept : Plugin() {
         return runCatching {
             val body = supabaseGet("Server_Whitelist_Items", mapOf("config_id" to config.id.toString()))
             val arr = JSONArray(body)
-            buildList {
-                for (i in 0 until arr.length()) {
-                    val obj = arr.getJSONObject(i)
-                    add(
-                        ServerWhitelistItem(
-                            id = obj.readLong("id"),
-                            configId = obj.readLong("config_id"),
-                            serverName = obj.readString("server_name")
-                        )
+            val out = ArrayList<ServerWhitelistItem>(arr.length())
+            for (i in 0 until arr.length()) {
+                val obj = arr.getJSONObject(i)
+                out.add(
+                    ServerWhitelistItem(
+                        id = obj.readLong("id"),
+                        configId = obj.readLong("config_id"),
+                        serverName = obj.readString("server_name")
                     )
-                }
+                )
             }
+            out
         }.onFailure {
             logger.error("Failed to fetch whitelist from Supabase", it)
         }.getOrDefault(emptyList())
@@ -375,18 +376,18 @@ class KeyIntercept : Plugin() {
         return runCatching {
             val body = supabaseGet("Pet_Type_Words", mapOf("pet_type" to config.petType.toString()))
             val arr = JSONArray(body)
-            buildList {
-                for (i in 0 until arr.length()) {
-                    val obj = arr.getJSONObject(i)
-                    add(
-                        PetWord(
-                            id = obj.readLong("id"),
-                            petType = obj.readLong("pet_type"),
-                            word = obj.readString("word")
-                        )
+            val out = ArrayList<PetWord>(arr.length())
+            for (i in 0 until arr.length()) {
+                val obj = arr.getJSONObject(i)
+                out.add(
+                    PetWord(
+                        id = obj.readLong("id"),
+                        petType = obj.readLong("pet_type"),
+                        word = obj.readString("word")
                     )
-                }
+                )
             }
+            out
         }.onFailure {
             logger.error("Failed to fetch pet words from Supabase", it)
         }.getOrDefault(emptyList())
