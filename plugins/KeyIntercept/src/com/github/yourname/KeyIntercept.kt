@@ -744,7 +744,54 @@ class KeyIntercept : Plugin() {
             }
         }
 
+        // Fallback for obfuscated/new field names: only inspect fields on the Send object itself.
+        // This avoids nested/user object corruption while still catching non-constructor send paths.
+        val allFields = getAllDeclaredFields(target)
+        for (field in allFields) {
+            val fieldName = field.name
+            val lower = fieldName.lowercase()
+            val looksLikeMeta =
+                lower.contains("id") ||
+                    lower.contains("nonce") ||
+                    lower.contains("token") ||
+                    lower.contains("channel") ||
+                    lower.contains("guild") ||
+                    lower.contains("user") ||
+                    lower.contains("session") ||
+                    lower.contains("application")
+            if (looksLikeMeta) continue
+
+            val currentValue = runCatching {
+                field.isAccessible = true
+                field.get(target)
+            }.getOrNull() as? String ?: continue
+            if (currentValue.isEmpty()) continue
+
+            val updated = alterMessage(target, currentValue)
+            if (updated == currentValue) continue
+
+            val wrote = runCatching {
+                field.isAccessible = true
+                field.set(target, updated)
+                true
+            }.getOrDefault(false)
+            if (wrote) {
+                changed = true
+                logger.info("Mutated $sourceName.$fieldName (fallback)")
+            }
+        }
+
         return changed
+    }
+
+    private fun getAllDeclaredFields(target: Any): List<java.lang.reflect.Field> {
+        val out = ArrayList<java.lang.reflect.Field>()
+        var current: Class<*>? = target.javaClass
+        while (current != null && current != Any::class.java) {
+            out.addAll(current.declaredFields)
+            current = current.superclass
+        }
+        return out
     }
 
     private fun checkWhitelist(serverName: String): Boolean {
