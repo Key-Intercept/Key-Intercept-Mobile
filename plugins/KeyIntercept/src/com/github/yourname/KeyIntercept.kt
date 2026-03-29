@@ -664,6 +664,16 @@ class KeyIntercept : Plugin() {
             val contextual = alterMessage(contextSource, input)
             if (contextual != input) return contextual
 
+            val sourceClass = contextSource.javaClass.name
+            val sourceSimple = contextSource.javaClass.simpleName
+            val looksLikeSendPayload =
+                sourceClass.contains("MessageRequest", ignoreCase = true) ||
+                    sourceSimple.equals("Send", ignoreCase = true)
+            if (looksLikeSendPayload) {
+                logDebug("Contextual transform no-op for Send payload at $origin; applying fallback transforms")
+                return applyTransformsWithoutContext(input)
+            }
+
             if (resolveChannelId(contextSource) == null) {
                 logDebug("Context unavailable for $origin; applying fallback transforms")
                 return applyTransformsWithoutContext(input)
