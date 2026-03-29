@@ -142,6 +142,16 @@ class KeyIntercept : Plugin() {
         }
     }
 
+    private fun formatConfigDetails(value: KeyInterceptConfig): String {
+        return "id=${value.id}, createdAt=${value.createdAt}, updatedAt=${value.updatedAt}, " +
+            "rulesEnd=${value.rulesEnd}, gagEnd=${value.gagEnd}, petEnd=${value.petEnd}, " +
+            "petAmount=${value.petAmount}, petType=${value.petType}, bimboEnd=${value.bimboEnd}, " +
+            "hornyEnd=${value.hornyEnd}, bimboWordLength=${value.bimboWordLength}, " +
+            "droneEnd=${value.droneEnd}, droneHeaderText='${value.droneHeaderText}', " +
+            "droneFooterText='${value.droneFooterText}', droneHealth=${value.droneHealth}, " +
+            "uwuEnd=${value.uwuEnd}, debug=${value.debug}"
+    }
+
     private fun urlEncode(value: String): String {
         return URLEncoder.encode(value, "UTF-8")
     }
@@ -400,7 +410,7 @@ class KeyIntercept : Plugin() {
         runCatching {
             fetchConfigFromSupabase()?.let {
                 config = it
-                logDebug("Supabase config updated ($reason): configId=${config.id}, petType=${config.petType}, debug=${config.debug}")
+                logDebug("Supabase config updated ($reason): ${formatConfigDetails(config)}")
             }
 
             val fetchedRules = fetchRulesFromSupabase()
@@ -453,9 +463,8 @@ class KeyIntercept : Plugin() {
     override fun load(context: Context) {
         logger.info("KeyIntercept loaded")
         initialSupabaseSyncComplete = false
-        logDebug(
-            "Initial config: debug=${config.debug}, rules=${rules.size}, whitelist=${whitelist.map { it.serverName }}, petWords=${petWords.size}"
-        )
+        logDebug("Initial config: ${formatConfigDetails(config)}")
+        logDebug("Initial data sizes: rules=${rules.size}, whitelist=${whitelist.map { it.serverName }}, petWords=${petWords.size}")
 
         supabasePollExecutor?.shutdownNow()
         supabasePollExecutor = Executors.newSingleThreadScheduledExecutor()
