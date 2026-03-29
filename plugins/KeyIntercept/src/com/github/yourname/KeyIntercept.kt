@@ -595,8 +595,19 @@ class KeyIntercept : Plugin() {
                 val contextSource = hookParam.args.firstOrNull { it != null && it !is String }
                 var changedStringArg = false
                 hookParam.args.forEachIndexed { index, arg ->
-                    if (arg is String && contextSource != null) {
-                        val updated = alterMessage(contextSource, arg)
+                    if (arg is String) {
+                        val updated = if (contextSource != null) {
+                            val contextual = alterMessage(contextSource, arg)
+                            if (contextual == arg && resolveChannelId(contextSource) == null) {
+                                logDebug("Context unavailable for String arg[$index]; applying fallback transforms")
+                                applyTransformsWithoutContext(arg)
+                            } else {
+                                contextual
+                            }
+                        } else {
+                            logDebug("No non-String context source in ${method.name}; applying fallback transforms")
+                            applyTransformsWithoutContext(arg)
+                        }
                         if (updated != arg) {
                             hookParam.args[index] = updated
                             changedStringArg = true
@@ -1013,6 +1024,18 @@ class KeyIntercept : Plugin() {
         return modified
     }
 
+    private fun applyTransformsWithoutContext(content: String): String {
+        var modified = content
+        modified = applyRules(modified)
+        modified = applyUwu(modified)
+        modified = applyHorny(modified)
+        modified = applyPet(modified)
+        modified = applyBimbo(modified)
+        modified = applyGag(modified)
+        modified = applyDrone(modified)
+        return modified
+    }
+
     private fun mutateContentField(target: Any, sourceName: String): Boolean {
         val content = getFieldValue(target, CONTENT_FIELD) as? String
         if (content == null) {
@@ -1049,7 +1072,15 @@ class KeyIntercept : Plugin() {
         val wrapped: (Any?) -> Any? = { input ->
             logDebug("Preprocessing callback invoked for ${target.javaClass.simpleName}")
             val transformedInput = when (input) {
-                is String -> alterMessage(target, input)
+                is String -> {
+                    val contextual = alterMessage(target, input)
+                    if (contextual == input && resolveChannelId(target) == null) {
+                        logDebug("Context unavailable in preprocessing input; applying fallback transforms")
+                        applyTransformsWithoutContext(input)
+                    } else {
+                        contextual
+                    }
+                }
                 null -> null
                 else -> {
                     mutateOutgoingData(input)
@@ -1058,8 +1089,17 @@ class KeyIntercept : Plugin() {
             }
 
             val originalResult = original.invoke(transformedInput)
+            val sourceForResult = if (transformedInput is String) target else transformedInput ?: target
             val transformedResult = when (originalResult) {
-                is String -> alterMessage(transformedInput ?: target, originalResult)
+                is String -> {
+                    val contextual = alterMessage(sourceForResult, originalResult)
+                    if (contextual == originalResult && resolveChannelId(sourceForResult) == null) {
+                        logDebug("Context unavailable in preprocessing result; applying fallback transforms")
+                        applyTransformsWithoutContext(originalResult)
+                    } else {
+                        contextual
+                    }
+                }
                 null -> null
                 else -> {
                     mutateOutgoingData(originalResult)
