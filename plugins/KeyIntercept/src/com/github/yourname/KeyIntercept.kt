@@ -291,22 +291,29 @@ class KeyIntercept : Plugin() {
                 return@runCatching null
             }
 
-            val subId = profilesArray.getJSONObject(0).readLong("id", 0L)
-            if (subId == 0L) {
+            val subId = runCatching {
+                profilesArray.getJSONObject(0).get("id").toString().trim()
+            }.getOrDefault("")
+            if (subId.isBlank()) {
                 logger.warn("profiles row for discord_id=$discordId does not contain a valid id")
                 return@runCatching null
             }
 
-            val accessBody = supabaseGet("Sub_Config_Access", mapOf("sub_id" to subId.toString()))
+            val accessBody = supabaseGet("Sub_Config_Access", mapOf("sub_id" to subId))
             val accessArray = JSONArray(accessBody)
             if (accessArray.length() == 0) {
                 logger.warn("No row in Sub_Config_Access for sub_id=$subId")
                 return@runCatching null
             }
 
-            val configId = accessArray.getJSONObject(0).readLong("config_id", 0L)
-            if (configId == 0L) {
-                logger.warn("Sub_Config_Access row for sub_id=$subId does not contain a valid config_id")
+            val rawConfigId = runCatching { accessArray.getJSONObject(0).get("config_id") }.getOrNull()
+            val configId = when (rawConfigId) {
+                is Number -> rawConfigId.toLong()
+                is String -> rawConfigId.toLongOrNull()
+                else -> null
+            }
+            if (configId == null || configId <= 0L) {
+                logger.warn("Sub_Config_Access row for sub_id=$subId has non-numeric config_id=$rawConfigId")
                 return@runCatching null
             }
 
