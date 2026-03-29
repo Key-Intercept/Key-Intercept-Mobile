@@ -145,6 +145,8 @@ class KeyIntercept : Plugin() {
     private val supabaseJobs = Collections.synchronizedList(mutableListOf<Job>())
     private val realtimeChannels = Collections.synchronizedList(mutableListOf<RealtimeChannel>())
     private var supabaseClient: SupabaseClient? = null
+    @Volatile
+    private var initialSupabaseSyncComplete = false
 
     private fun logDebug(message: String) {
         if (config.debug) logger.info("[KeyIntercept][Debug] $message")
@@ -429,6 +431,7 @@ class KeyIntercept : Plugin() {
 
     override fun load(context: Context) {
         logger.info("KeyIntercept loaded")
+        initialSupabaseSyncComplete = false
         if (supabaseScope == null) {
             supabaseScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         }
@@ -470,6 +473,9 @@ class KeyIntercept : Plugin() {
                 petWords = fetchedPetWords
                 logDebug("Initial pet words fetched from Supabase: ${petWords.size}")
             }
+
+            initialSupabaseSyncComplete = true
+            logDebug("Initial Supabase sync complete")
 
             setupRealtimeSync(client)
         }
@@ -530,9 +536,15 @@ class KeyIntercept : Plugin() {
         supabaseClient = null
         supabaseScope?.coroutineContext?.cancelChildren()
         supabaseScope = null
+        initialSupabaseSyncComplete = false
     }
 
     private fun mutateOutgoingData(candidate: Any): Boolean {
+        if (!initialSupabaseSyncComplete) {
+            logDebug("Skipping mutation because initial Supabase sync is not complete yet")
+            return false
+        }
+
         logDebug("Inspecting candidate ${candidate.javaClass.name}")
         var changed = false
 
