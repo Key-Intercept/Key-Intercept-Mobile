@@ -18,6 +18,9 @@ import java.util.Collections
 import java.util.Date
 import java.util.IdentityHashMap
 import java.util.ArrayList
+import java.text.SimpleDateFormat
+import java.util.Locale
+import java.util.TimeZone
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.TimeUnit
@@ -241,6 +244,76 @@ class KeyIntercept : Plugin() {
         return runCatching { getString(key) }.getOrElse { default }
     }
 
+    private fun parseEpochLikeToMillis(value: Long): Long {
+        return if (value in -99_999_999_999L..99_999_999_999L) value * 1000L else value
+    }
+
+    private fun parseTimestampStringToMillis(raw: String): Long? {
+        val trimmed = raw.trim()
+        if (trimmed.isEmpty()) return null
+
+        val numeric = trimmed.toLongOrNull()
+        if (numeric != null) return parseEpochLikeToMillis(numeric)
+
+        var normalized = trimmed
+        if (normalized.indexOf(' ') >= 0 && normalized.indexOf('T') < 0) {
+            normalized = normalized.replace(' ', 'T')
+        }
+
+        // Supabase/Postgres can send microseconds; reduce to millis precision for parsing.
+        val fracStart = normalized.indexOf('.')
+        if (fracStart >= 0) {
+            var fracEnd = normalized.indexOf('Z', fracStart)
+            if (fracEnd < 0) {
+                val plusPos = normalized.indexOf('+', fracStart)
+                val minusPos = normalized.indexOf('-', fracStart + 1)
+                fracEnd = when {
+                    plusPos >= 0 && minusPos >= 0 -> minOf(plusPos, minusPos)
+                    plusPos >= 0 -> plusPos
+                    minusPos >= 0 -> minusPos
+                    else -> normalized.length
+                }
+            }
+
+            val frac = normalized.substring(fracStart + 1, fracEnd)
+            if (frac.length > 3) {
+                normalized = normalized.substring(0, fracStart + 1) + frac.substring(0, 3) + normalized.substring(fracEnd)
+            }
+        }
+
+        val patterns = arrayOf(
+            "yyyy-MM-dd'T'HH:mm:ss.SSSXXX",
+            "yyyy-MM-dd'T'HH:mm:ssXXX",
+            "yyyy-MM-dd'T'HH:mm:ss.SSSX",
+            "yyyy-MM-dd'T'HH:mm:ssX",
+            "yyyy-MM-dd'T'HH:mm:ss.SSS",
+            "yyyy-MM-dd'T'HH:mm:ss",
+            "yyyy-MM-dd HH:mm:ss.SSS",
+            "yyyy-MM-dd HH:mm:ss"
+        )
+
+        for (pattern in patterns) {
+            val parser = SimpleDateFormat(pattern, Locale.US).apply {
+                isLenient = false
+                timeZone = TimeZone.getTimeZone("UTC")
+            }
+            val parsed = runCatching { parser.parse(normalized) }.getOrNull()
+            if (parsed != null) return parsed.time
+        }
+
+        return null
+    }
+
+    private fun JSONObject.readTimestampMillis(key: String, default: Long = 0L): Long {
+        if (!has(key) || isNull(key)) return default
+        val value = get(key)
+        return when (value) {
+            is Number -> parseEpochLikeToMillis(value.toLong())
+            is String -> parseTimestampStringToMillis(value) ?: default
+            else -> default
+        }
+    }
+
     private fun fetchConfigFromSupabase(): KeyInterceptConfig? {
         return runCatching {
             val body = supabaseGet("Config", mapOf("id" to config.id.toString()))
@@ -251,21 +324,21 @@ class KeyIntercept : Plugin() {
                 val obj = arr.getJSONObject(0)
                 KeyInterceptConfig(
                     id = obj.readLong("id", config.id),
-                    createdAt = obj.readLong("created_at"),
-                    updatedAt = obj.readLong("updated_at"),
-                    rulesEnd = obj.readLong("rules_end"),
-                    gagEnd = obj.readLong("gag_end"),
-                    petEnd = obj.readLong("pet_end"),
+                    createdAt = obj.readTimestampMillis("created_at"),
+                    updatedAt = obj.readTimestampMillis("updated_at"),
+                    rulesEnd = obj.readTimestampMillis("rules_end"),
+                    gagEnd = obj.readTimestampMillis("gag_end"),
+                    petEnd = obj.readTimestampMillis("pet_end"),
                     petAmount = obj.readFloat("pet_amount"),
                     petType = obj.readLong("pet_type", config.petType),
-                    bimboEnd = obj.readLong("bimbo_end"),
-                    hornyEnd = obj.readLong("horny_end"),
+                    bimboEnd = obj.readTimestampMillis("bimbo_end"),
+                    hornyEnd = obj.readTimestampMillis("horny_end"),
                     bimboWordLength = obj.readInt("bimbo_word_length"),
-                    droneEnd = obj.readLong("drone_end"),
+                    droneEnd = obj.readTimestampMillis("drone_end"),
                     droneHeaderText = obj.readString("drone_header_text"),
                     droneFooterText = obj.readString("drone_footer_text"),
                     droneHealth = obj.readFloat("drone_health"),
-                    uwuEnd = obj.readLong("uwu_end"),
+                    uwuEnd = obj.readTimestampMillis("uwu_end"),
                     debug = obj.readBoolean("debug")
                 )
             }
