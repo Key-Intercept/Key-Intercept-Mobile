@@ -566,6 +566,8 @@ class KeyIntercept : Plugin() {
     }
 
     override fun start(context: Context) {
+        installMessageRequestSendConstructorHooks()
+
         val targetMethods = MessageQueue::class.java.declaredMethods
             .filter { it.name == "doSend" || it.name == "enqueue" }
 
@@ -596,18 +598,7 @@ class KeyIntercept : Plugin() {
                 var changedStringArg = false
                 hookParam.args.forEachIndexed { index, arg ->
                     if (arg is String) {
-                        val updated = if (contextSource != null) {
-                            val contextual = alterMessage(contextSource, arg)
-                            if (contextual == arg && resolveChannelId(contextSource) == null) {
-                                logDebug("Context unavailable for String arg[$index]; applying fallback transforms")
-                                applyTransformsWithoutContext(arg)
-                            } else {
-                                contextual
-                            }
-                        } else {
-                            logDebug("No non-String context source in ${method.name}; applying fallback transforms")
-                            applyTransformsWithoutContext(arg)
-                        }
+                        val updated = transformOutgoingString(contextSource, arg, "MessageQueue.${method.name} arg[$index]")
                         if (updated != arg) {
                             hookParam.args[index] = updated
                             changedStringArg = true
@@ -624,6 +615,65 @@ class KeyIntercept : Plugin() {
                 }
             })
         }
+    }
+
+    private fun installMessageRequestSendConstructorHooks() {
+        runCatching {
+            val sendClass = Class.forName("com.discord.utilities.messagesend.MessageRequest\$Send")
+            val constructors = sendClass.declaredConstructors
+            if (constructors.isEmpty()) {
+                logger.warn("No MessageRequest.Send constructors found to patch")
+                return
+            }
+
+            constructors.forEach { constructor ->
+                patcher.patch(constructor, Hook { hookParam: XC_MethodHook.MethodHookParam ->
+                    val contextSource = hookParam.args.firstOrNull { it != null && it !is String }
+                    var changed = false
+                    hookParam.args.forEachIndexed { index, arg ->
+                        if (arg is String) {
+                            val updated = transformOutgoingString(
+                                contextSource,
+                                arg,
+                                "MessageRequest.Send::<init> arg[$index]"
+                            )
+                            if (updated != arg) {
+                                hookParam.args[index] = updated
+                                changed = true
+                                logDebug("Mutated MessageRequest.Send constructor String arg[$index]")
+                            }
+                        }
+                    }
+
+                    if (changed) {
+                        logger.info("Modified outgoing message in MessageRequest.Send constructor")
+                    }
+                })
+            }
+
+            logDebug("Hooked MessageRequest.Send constructors: ${constructors.size}")
+        }.onFailure {
+            logger.error("Failed to install MessageRequest.Send constructor hooks", it)
+        }
+    }
+
+    private fun transformOutgoingString(contextSource: Any?, input: String, origin: String): String {
+        if (input.isEmpty()) return input
+
+        if (contextSource != null) {
+            val contextual = alterMessage(contextSource, input)
+            if (contextual != input) return contextual
+
+            if (resolveChannelId(contextSource) == null) {
+                logDebug("Context unavailable for $origin; applying fallback transforms")
+                return applyTransformsWithoutContext(input)
+            }
+
+            return input
+        }
+
+        logDebug("No non-String context source for $origin; applying fallback transforms")
+        return applyTransformsWithoutContext(input)
     }
 
     override fun stop(context: Context) {
