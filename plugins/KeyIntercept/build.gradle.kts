@@ -34,3 +34,13 @@ aliucord {
     // Uncomment if the plugin is unfinished
     deploy = false
 }
+
+dependencies {
+    val supabaseVersion = "3.2.2" // Replace with your target version
+    implementation(platform("io.github.jan-tennert.supabase:bom:$supabaseVersion"))
+    implementation("io.github.jan-tennert.supabase:postgrest-kt")
+    implementation("io.github.jan-tennert.supabase:realtime-kt")
+    
+    val ktorVersion = "3.2.2" // Must match the requirement for Supabase 3.x
+    implementation("io.ktor:ktor-client-okhttp:$ktorVersion") 
+}

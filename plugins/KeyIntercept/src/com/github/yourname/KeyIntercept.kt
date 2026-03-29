@@ -7,7 +7,10 @@ import com.aliucord.patcher.Hook
 import com.discord.utilities.messagesend.MessageQueue
 import de.robv.android.xposed.XC_MethodHook
 import java.util.Collections
+import java.util.Date
 import java.util.IdentityHashMap
+import kotlin.math.floor
+import kotlin.random.Random
 
 @AliucordPlugin(requiresRestart = false)
 class KeyIntercept : Plugin() {
@@ -15,10 +18,103 @@ class KeyIntercept : Plugin() {
         const val CONTENT_FIELD = "content"
         const val MESSAGE_FIELD = "message"
         const val PREPROCESSING_FIELD = "onPreprocessing"
-        const val MARKER_SUFFIX = " [Modified by KeyIntercept]"
+
+        var config: KeyInterceptConfig = KeyInterceptConfig(
+            id = 1,
+            createdAt = Date().time,
+            updatedAt = Date().time,
+            rulesEnd = Date().time + 7 * 24 * 60 * 60 * 1000L,
+            gagEnd = Date().time + 7 * 24 * 60 * 60 * 1000L,
+            petEnd = Date().time + 7 * 24 * 60 * 60 * 1000L,
+            petAmount = 0.5f,
+            petType = 1,
+            bimboEnd = Date().time + 7 * 24 * 60 * 60 * 1000L,
+            hornyEnd = Date().time + 7 * 24 * 60 * 60 * 1000L,
+            bimboWordLength = 5,
+            droneEnd = Date().time + 7 * 24 * 60 * 60 * 1000L,
+            droneHeaderText = "Drone Header",
+            droneFooterText = "Drone Footer",
+            droneHealth = 0.75f,
+            uwuEnd = Date().time + 7 * 24 * 60 * 60 * 1000L,
+            debug = true
+        )
+
+        var rules: List<Rule> = listOf(
+            Rule(
+                id = 1,
+                createdAt = Date().time,
+                updatedAt = Date().time,
+                configId = 1,
+                ruleRegex = "\\bhello\\b",
+                ruleReplacement = "hi",
+                enabled = true,
+                chanceToApply = 1.0f
+            )
+        )
+
+        var whitelist: List<ServerWhitelistItem> = listOf(
+            ServerWhitelistItem(
+                id = 1,
+                configId = 1,
+                serverName = "Example Server"
+            )
+        )
+
+        var petWords: List<PetWord> = listOf(
+            PetWord(id = 1, petType = 1, word = "pet"),
+            PetWord(id = 2, petType = 2, word = "kitty"),
+            PetWord(id = 3, petType = 3, word = "puppy")
+        )
     }
 
+    data class KeyInterceptConfig(
+        val id: Long = 0,
+        val createdAt: Long = 0,
+        val updatedAt: Long = 0,
+        val rulesEnd: Long = 0,
+        val gagEnd: Long = 0,
+        val petEnd: Long = 0,
+        val petAmount: Float = 0f,
+        val petType: Long = 0,
+        val bimboEnd: Long = 0,
+        val hornyEnd: Long = 0,
+        val bimboWordLength: Int = 0,
+        val droneEnd: Long = 0,
+        val droneHeaderText: String = "",
+        val droneFooterText: String = "",
+        val droneHealth: Float = 0f,
+        val uwuEnd: Long = 0,
+        val debug: Boolean = false
+    )
+
+    data class Rule(
+        val id: Long = 0,
+        val createdAt: Long = 0,
+        val updatedAt: Long = 0,
+        val configId: Long = 0,
+        val ruleRegex: String = "",
+        val ruleReplacement: String = "",
+        val enabled: Boolean = false,
+        val chanceToApply: Float = 0f
+    )
+
+    data class ServerWhitelistItem(
+        val id: Long = 0,
+        val configId: Long = 0,
+        val serverName: String = ""
+    )
+
+    data class PetWord(
+        val id: Long = 0,
+        val petType: Long = 0,
+        val word: String = ""
+    )
+
     private val wrappedCallbacks = Collections.newSetFromMap(IdentityHashMap<Any, Boolean>())
+
+    override fun load(context: Context) {
+        logger.info("KeyIntercept loaded")
+    }
 
     override fun start(context: Context) {
         val targetMethods = MessageQueue::class.java.declaredMethods
@@ -29,15 +125,27 @@ class KeyIntercept : Plugin() {
             return
         }
 
-        logger.info("Hooking MessageQueue methods: ${targetMethods.joinToString { it.name + it.parameterTypes.joinToString(prefix = "(", postfix = ")") { p -> p.simpleName } }}")
+        logger.info(
+            "Hooking MessageQueue methods: ${
+                targetMethods.joinToString {
+                    it.name + it.parameterTypes.joinToString(
+                        prefix = "(",
+                        postfix = ")"
+                    ) { p -> p.simpleName }
+                }
+            }"
+        )
 
         targetMethods.forEach { method ->
             patcher.patch(method, Hook { hookParam: XC_MethodHook.MethodHookParam ->
                 val changed = hookParam.args.any { arg -> arg != null && mutateOutgoingData(arg) }
-
                 if (changed) logger.info("Modified outgoing message in MessageQueue.${method.name}")
             })
         }
+    }
+
+    override fun stop(context: Context) {
+        patcher.unpatchAll()
     }
 
     private fun mutateOutgoingData(candidate: Any): Boolean {
@@ -59,14 +167,256 @@ class KeyIntercept : Plugin() {
         return changed
     }
 
-    private fun alterMessage(content: String): String {
-        return if (content.endsWith(MARKER_SUFFIX)) content else "$content$MARKER_SUFFIX"
+    private fun checkWhitelist(serverName: String): Boolean {
+        return whitelist.any { it.serverName == serverName }
+    }
+
+    private fun shouldApplyRules(): Boolean = config.rulesEnd > System.currentTimeMillis()
+
+    private fun shouldApplyGag(): Boolean = config.gagEnd > System.currentTimeMillis()
+
+    private fun shouldApplyPet(): Boolean = config.petEnd > System.currentTimeMillis()
+
+    private fun shouldApplyBimbo(): Boolean = config.bimboEnd > System.currentTimeMillis()
+
+    private fun shouldApplyHorny(): Boolean = config.hornyEnd > System.currentTimeMillis()
+
+    private fun shouldApplyDrone(): Boolean = config.droneEnd > System.currentTimeMillis()
+
+    private fun shouldApplyUwu(): Boolean = config.uwuEnd > System.currentTimeMillis()
+
+    private fun applyRules(content: String): String {
+        if (!shouldApplyRules()) return content
+        var modified = content
+        for (rule in rules) {
+            if (rule.enabled && Random.nextFloat() < rule.chanceToApply) {
+                modified = modified.replace(Regex(rule.ruleRegex), rule.ruleReplacement)
+            }
+        }
+        return modified
+    }
+
+    private fun applyGag(content: String): String {
+        if (!shouldApplyGag()) return content
+        val remainChars = setOf(
+            'a', 'e', 'i', 'o', 'u', 'g', 'h',
+            'A', 'E', 'I', 'O', 'U', 'G', 'H',
+            '?', '!', '.', ',', ':', ';', '#', '*', '-', '(', ')', '~'
+        )
+
+        val output = StringBuilder()
+        for (word in content.split(" ")) {
+            if (wordIsLink(word)) {
+                output.append(word).append(' ')
+                continue
+            }
+
+            for (ch in word) {
+                if (remainChars.contains(ch)) {
+                    output.append(ch)
+                } else {
+                    output.append(
+                        if (ch.isUpperCase()) {
+                            if (Random.nextBoolean()) 'G' else 'H'
+                        } else {
+                            if (Random.nextBoolean()) 'g' else 'h'
+                        }
+                    )
+                }
+            }
+            output.append(' ')
+        }
+
+        return output.toString().trimEnd()
+    }
+
+    private fun applyPet(content: String): String {
+        if (!shouldApplyPet()) return content
+        val output = StringBuilder()
+        for (word in content.split(" ")) {
+            if (wordIsLink(word)) {
+                output.append(word).append(' ')
+                continue
+            }
+            if (Random.nextFloat() < config.petAmount) {
+                output.append(petWords.randomOrNull()?.word ?: "pet").append(' ')
+            } else {
+                output.append(word).append(' ')
+            }
+        }
+        return output.toString().trimEnd()
+    }
+
+    private fun applyBimbo(content: String): String {
+        if (!shouldApplyBimbo()) return content
+
+        val pronouns = setOf("i", "is", "you", "he", "she", "we", "they", "it")
+        val gargleWords = listOf("like", "hehe", "uhh", "totally", "so dumbb")
+        val output = StringBuilder()
+
+        for (word in content.split(" ")) {
+            var changed = false
+            if (!wordIsLink(word)) {
+                if (pronouns.contains(word.lowercase())) {
+                    output.append(word).append(" like totally ")
+                    changed = true
+                }
+                if (word.length > config.bimboWordLength && config.bimboWordLength > 2) {
+                    output.append(word.substring(0, config.bimboWordLength - 2))
+                    output.append("uhhhh long words hardd hehe")
+                    return output.toString()
+                }
+            }
+
+            if (!changed) {
+                output.append(word).append(' ')
+            }
+
+            if (Random.nextFloat() < 0.1f) {
+                output.append(gargleWords.random()).append(' ')
+            }
+        }
+
+        return output.toString().trimEnd()
+    }
+
+    private fun applyHorny(content: String): String {
+        if (!shouldApplyHorny()) return content
+
+        val hornyWords = listOf(
+            "hmmph", "nngh", "ahhh", "ooh", "oohh", "mmm", "hehe", "hehehe", "heheh",
+            "eheh", "ehehe", "eheheh", "guhh", "pleasee", "need to cumm", "oh goshh",
+            "ohhh", "ahhh", "cummm", "gggg"
+        )
+
+        val output = StringBuilder()
+        for (word in content.split(" ")) {
+            output.append(word).append(' ')
+            if (Random.nextFloat() < 0.75f) {
+                output.append(hornyWords.random()).append(' ')
+            }
+        }
+        return output.toString().trimEnd()
+    }
+
+    private fun applyDrone(content: String): String {
+        if (!shouldApplyDrone()) return content
+
+        if (config.droneHealth < 0.1f) {
+            return "`This Drone haaaaas receieved bzzzzt, ppplease provide repaiirs using beep '/repair', tthank youu. Returned Error: 0x7547372482`"
+        }
+
+        val containsLink = content.split(" ").any(::wordIsLink)
+
+        var working = content
+        if (!containsLink) {
+            working = working.replace(Regex("(?i)\\bMe\\b"), "This Drone")
+            working = working.replace(Regex("(?i)\\bMy\\b"), "Its'")
+            working = working.replace(Regex("(?i)\\bI am\\b"), "It is")
+            working = working.replace(Regex("(?i)\\bI(')?m\\b"), "It is")
+            working = working.replace(Regex("(?i)\\bI\\b"), "This Drone")
+        }
+
+        val phaseOne = StringBuilder()
+        for (word in working.split(" ")) {
+            if (!wordIsLink(word) && Random.nextFloat() > config.droneHealth) {
+                phaseOne.append(listOf("`beep`", "`bzzt`").random()).append(' ')
+            }
+            phaseOne.append(word).append(' ')
+        }
+
+        val phaseTwo = StringBuilder()
+        var lastTriggered = 0
+        for (word in phaseOne.toString().trimEnd().split(" ")) {
+            if (wordIsLink(word)) {
+                phaseTwo.append(word).append(' ')
+                continue
+            }
+
+            val outWord = StringBuilder()
+            for (ch in word) {
+                outWord.append(ch)
+                lastTriggered += 1
+
+                val noisyThreshold = (lastTriggered / 100f) - (config.droneHealth / 100f)
+                if (ch != '`' && Random.nextFloat() < noisyThreshold.coerceAtLeast(0f)) {
+                    lastTriggered = 0
+                    val repeatCount = floor(Random.nextDouble(0.0, 10.0)).toInt()
+                    repeat(repeatCount) { outWord.append(ch) }
+                }
+            }
+
+            phaseTwo.append(outWord).append(' ')
+        }
+
+        return "`${config.droneHeaderText}`\n${phaseTwo.toString().trimEnd()}\n`${config.droneFooterText}`"
+    }
+
+    private fun applyUwu(content: String): String {
+        if (!shouldApplyUwu()) return content
+
+        val output = StringBuilder()
+        for (word in content.split(" ")) {
+            if (wordIsLink(word)) {
+                output.append(word).append(' ')
+                continue
+            }
+
+            var outWord = word
+            outWord = outWord.replace(Regex("r|l"), "w")
+            outWord = outWord.replace(Regex("R|L"), "W")
+            outWord = outWord.replace(Regex("n([aeiou])"), "ny$1")
+            outWord = outWord.replace(Regex("N([aeiou])"), "Ny$1")
+            outWord = outWord.replace(Regex("N([AEIOU])"), "NY$1")
+            outWord = outWord.replace(Regex("ove"), "uv")
+            outWord = outWord.replace(Regex("OVE"), "UV")
+            outWord = outWord.replace(Regex("th"), "d")
+            outWord = outWord.replace(Regex("TH"), "D")
+            outWord = outWord.replace(Regex("u"), "uw")
+            outWord = outWord.replace(Regex("U"), "UW")
+
+            output.append(outWord).append(' ')
+        }
+
+        return output.toString().trimEnd()
+    }
+
+    private fun wordIsLink(word: String): Boolean {
+        return word.startsWith("http://") || word.startsWith("https://") || word.startsWith("www.")
+    }
+
+    private fun alterMessage(source: Any, content: String): String {
+        val channelName = getFieldValue(source, "channelName") as? String ?: "Unknown Channel"
+        val dmName = getFieldValue(source, "recipientName") as? String ?: "Unknown DM"
+        val serverName = getFieldValue(source, "guildName") as? String ?: "Unknown Server"
+
+        val nameToCheck = when {
+            channelName != "Unknown Channel" -> channelName
+            dmName != "Unknown DM" -> dmName
+            else -> serverName
+        }
+
+        if (!checkWhitelist(nameToCheck)) return content
+        if (channelName.contains("sfw", ignoreCase = true) && !channelName.contains("nsfw", ignoreCase = true)) {
+            return content
+        }
+
+        var modified = content
+        modified = applyRules(modified)
+        modified = applyUwu(modified)
+        modified = applyHorny(modified)
+        modified = applyPet(modified)
+        modified = applyBimbo(modified)
+        modified = applyGag(modified)
+        modified = applyDrone(modified)
+        return modified
     }
 
     private fun mutateContentField(target: Any, sourceName: String): Boolean {
         val content = getFieldValue(target, CONTENT_FIELD) as? String ?: return false
-        val updated = alterMessage(content)
+        val updated = alterMessage(target, content)
         if (updated == content) return false
+
         return setFieldValue(target, CONTENT_FIELD, updated).also { success ->
             if (success) logger.info("Mutated $sourceName.content")
         }
@@ -79,15 +429,11 @@ class KeyIntercept : Plugin() {
 
         val original = callback as Function1<Any?, Any?>
         val wrapped: (Any?) -> Any? = { input ->
-            if (input != null) {
-                mutateOutgoingData(input)
-            }
+            if (input != null) mutateOutgoingData(input)
 
             val result = original.invoke(input)
 
-            if (result != null) {
-                mutateOutgoingData(result)
-            }
+            if (result != null) mutateOutgoingData(result)
 
             val nestedMessage = getFieldValue(target, MESSAGE_FIELD)
             if (nestedMessage != null) {
@@ -131,9 +477,5 @@ class KeyIntercept : Plugin() {
             currentClass = currentClass.superclass
         }
         return false
-    }
-
-    override fun stop(context: Context) {
-        patcher.unpatchAll()
     }
 }
