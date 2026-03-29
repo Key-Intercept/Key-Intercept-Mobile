@@ -633,26 +633,36 @@ class KeyIntercept : Plugin() {
                 ?: throw IllegalStateException("Didn't find RestAPIParams.Message ctor")
 
             patcher.patch(ctor, PreHook { hookParam ->
-                var changed = false
-                
-                logDebug("RestAPIParams.Message constructor called with ${hookParam.args.size} args")
-                
-                hookParam.args.forEachIndexed { index, arg ->
-                    if (arg is String && arg.isNotEmpty()) {
-                        logDebug("  arg[$index] (String): ${arg.take(100)}")
-                        val updated = transformOutgoingString(null, arg, "RestAPIParams.Message::<init> arg[$index]")
-                        if (updated != arg) {
-                            hookParam.args[index] = updated
-                            changed = true
-                            logDebug("  -> MUTATED to: ${updated.take(100)}")
+                try {
+                    logDebug("RestAPIParams.Message constructor called with ${hookParam.args.size} args")
+                    
+                    var contentArgIndex = -1
+                    var changed = false
+                    
+                    // Find the first string argument that looks like message content (not empty)
+                    hookParam.args.forEachIndexed { index, arg ->
+                        if (contentArgIndex < 0 && arg is String && arg.isNotEmpty()) {
+                            contentArgIndex = index
+                            logDebug("  arg[$index] (content candidate): ${arg.take(80)}")
+                            
+                            try {
+                                val updated = transformOutgoingString(null, arg, "RestAPIParams.Message::<init> content arg[$index]")
+                                if (updated != arg) {
+                                    hookParam.args[index] = updated
+                                    changed = true
+                                    logDebug("  -> MUTATED to: ${updated.take(80)}")
+                                }
+                            } catch (e: Exception) {
+                                logger.error("Exception transforming RestAPIParams.Message content arg", e)
+                            }
                         }
-                    } else if (arg != null) {
-                        logDebug("  arg[$index] (${arg.javaClass.simpleName}): $arg")
                     }
-                }
 
-                if (changed) {
-                    logger.info("Modified outgoing message in RestAPIParams.Message constructor")
+                    if (!changed) {
+                        logDebug("No mutations made to RestAPIParams.Message constructor")
+                    }
+                } catch (e: Exception) {
+                    logger.error("Unexpected error in RestAPIParams.Message constructor hook", e)
                 }
             })
 
