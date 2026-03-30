@@ -1,8 +1,11 @@
-version = "4.0.5" // Plugin version. Increment this to trigger the updater
-description = "Key Intercept"
+version = "4.1.0" // Plugin version. Increment this to trigger the updater
+description = "A plugin for discord which helps you talk unproperly. Basically, this is a lil program that sits in the back of your discord. When you send a message it will edit it in some way dependent upon a list of rules"
 
 aliucord {
     changelog = """
+        # 4.1.0
+        * Full Release
+
         # 4.0.5
         * Target Send.message.content directly in enqueue/doSend hooks
         * Wrap Send.onPreprocessing to keep content modified through preprocessing
@@ -32,7 +35,7 @@ aliucord {
     author("supersliser", 0L)
 
     // Uncomment if the plugin is unfinished
-    deploy = false
+    deploy = true
 }
 
 dependencies {
