@@ -3,22 +3,17 @@ package com.github.supersliser
 import android.content.Context
 import com.aliucord.annotations.AliucordPlugin
 import com.aliucord.entities.Plugin
-import com.aliucord.patcher.Hook
 import com.aliucord.patcher.PreHook
 import com.aliucord.utils.ChannelUtils
 import com.aliucord.wrappers.ChannelWrapper
 import com.discord.restapi.RestAPIParams
 import com.discord.stores.StoreStream
-import com.discord.utilities.messagesend.MessageQueue
-import de.robv.android.xposed.XC_MethodHook
 import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URLEncoder
 import java.net.URL
-import java.util.Collections
 import java.util.Date
-import java.util.IdentityHashMap
 import java.util.ArrayList
 import java.text.SimpleDateFormat
 import java.util.Locale
@@ -32,36 +27,32 @@ import kotlin.random.Random
 @AliucordPlugin(requiresRestart = false)
 class KeyIntercept : Plugin() {
     private data class ConversationContext(
-        val channelId: Long?,
         val channelName: String,
         val dmName: String,
         val serverName: String
     )
 
     private companion object {
-        const val CONTENT_FIELD = "content"
-        const val MESSAGE_FIELD = "message"
-        const val PREPROCESSING_FIELD = "onPreprocessing"
         const val SUPABASE_URL = "https://qjzgfwithyvmwctesnqs.supabase.co"
         const val SUPABASE_KEY = "sb_publishable_cxq8QZp9BDtjE4G5qiPCFA_lUZ4Cbdh"
 
         var config: KeyInterceptConfig = KeyInterceptConfig(
-            id = 1,
+            id = -1,
             createdAt = Date().time,
             updatedAt = Date().time,
-            rulesEnd = Date().time + 7 * 24 * 60 * 60 * 1000L,
-            gagEnd = Date().time + 7 * 24 * 60 * 60 * 1000L,
-            petEnd = Date().time + 7 * 24 * 60 * 60 * 1000L,
-            petAmount = 0.5f,
-            petType = 1,
-            bimboEnd = Date().time + 7 * 24 * 60 * 60 * 1000L,
-            hornyEnd = Date().time + 7 * 24 * 60 * 60 * 1000L,
+            rulesEnd = 0,
+            gagEnd = 0,
+            petEnd = 0,
+            petAmount = 0f,
+            petType = 0,
+            bimboEnd = 0,
+            hornyEnd = 0,
             bimboWordLength = 5,
-            droneEnd = Date().time + 7 * 24 * 60 * 60 * 1000L,
+            droneEnd = 0,
             droneHeaderText = "Drone Header",
             droneFooterText = "Drone Footer",
             droneHealth = 0.75f,
-            uwuEnd = Date().time + 7 * 24 * 60 * 60 * 1000L,
+            uwuEnd = 0,
             debug = true
         )
 
@@ -135,12 +126,8 @@ class KeyIntercept : Plugin() {
         val word: String = ""
     )
 
-    private val wrappedCallbacks = Collections.newSetFromMap(IdentityHashMap<Any, Boolean>())
     private var supabasePollExecutor: ScheduledExecutorService? = null
     private val localDebugOverride = true
-    private val useRestApiSendHookOnly = true
-    @Volatile
-    private var initialSupabaseSyncComplete = false
     
     // Deduplication: track when the last message transform happened globally
     @Volatile
@@ -368,7 +355,28 @@ class KeyIntercept : Plugin() {
                 .firstOrNull()
                 ?: return@runCatching null
 
-            readLongField(me, "id", "userId")
+            listOf("id", "userId").asSequence().mapNotNull { fieldName ->
+                val value = runCatching {
+                    var currentClass: Class<*>? = me.javaClass
+                    while (currentClass != null && currentClass != Any::class.java) {
+                        val field = currentClass.declaredFields.firstOrNull { it.name == fieldName }
+                        if (field != null) {
+                            field.isAccessible = true
+                            return@runCatching field.get(me)
+                        }
+                        currentClass = currentClass.superclass
+                    }
+                    null
+                }.getOrNull()
+
+                when (value) {
+                    is Long -> value
+                    is Int -> value.toLong()
+                    is Short -> value.toLong()
+                    is String -> value.toLongOrNull()
+                    else -> null
+                }
+            }.firstOrNull()
         }.onFailure {
             logger.error("Failed to resolve current Discord user id", it)
         }.getOrNull()
@@ -530,20 +538,8 @@ class KeyIntercept : Plugin() {
         logDebug("Supabase polling started (15s interval)")
     }
 
-    private fun preview(input: String, maxLen: Int = 120): String {
-        return if (input.length <= maxLen) input else input.take(maxLen) + "..."
-    }
-
-    private fun describeArg(arg: Any?): String {
-        if (arg == null) return "null"
-        val klass = arg.javaClass.simpleName
-        val content = getFieldValue(arg, CONTENT_FIELD) as? String
-        return if (content != null) "$klass(content=\"${preview(content)}\")" else klass
-    }
-
     override fun load(context: Context) {
         logger.info("KeyIntercept loaded")
-        initialSupabaseSyncComplete = false
         logDebug("Initial config: ${formatConfigDetails(config)}")
         logDebug("Initial data sizes: rules=${rules.size}, whitelist=${whitelist.map { it.serverName }}, petWords=${petWords.size}")
 
@@ -553,83 +549,32 @@ class KeyIntercept : Plugin() {
         val executor = supabasePollExecutor
         if (executor == null) {
             logger.warn("Supabase poll executor could not be created; using local/default values")
-            initialSupabaseSyncComplete = true
             return
         }
 
+        var success = false;
+        for (i in 1..30) {
         executor.execute {
+            success = true;
             val resolvedConfigId = resolveConfigIdForCurrentUser()
             if (resolvedConfigId != null && resolvedConfigId != config.id) {
                 logDebug("Resolved config id from profiles/Sub_Config_Access: $resolvedConfigId")
                 config = config.copy(id = resolvedConfigId)
             } else if (resolvedConfigId == null) {
                 logger.warn("Could not resolve config id from Supabase access mapping; using fallback config id=${config.id}")
+                success = false;
             }
 
             refreshFromSupabase("initial")
-            initialSupabaseSyncComplete = true
             setupSupabasePolling()
             logDebug("Initial Supabase sync complete")
         }
+        if (success) break else Thread.sleep(1000L)
+    }
     }
 
     override fun start(context: Context) {
-        if (useRestApiSendHookOnly) {
-            installRestApiMessageConstructorHook()
-            return
-        }
-
-        installMessageRequestSendConstructorHooks()
-        installMessageRequestSendStringArgMethodHooks()
-        installNetworkMessageBodyHook()
-
-        val targetMethods = MessageQueue::class.java.declaredMethods
-            .filter { it.name == "doSend" || it.name == "enqueue" }
-
-        if (targetMethods.isEmpty()) {
-            logger.warn("Could not find MessageQueue send methods to patch")
-            return
-        }
-
-        logger.info(
-            "Hooking MessageQueue methods: ${
-                targetMethods.joinToString {
-                    it.name + it.parameterTypes.joinToString(
-                        prefix = "(",
-                        postfix = ")"
-                    ) { p -> p.simpleName }
-                }
-            }"
-        )
-        logDebug("Installing hooks for ${targetMethods.size} MessageQueue method(s)")
-
-        targetMethods.forEach { method ->
-            patcher.patch(method, Hook { hookParam: XC_MethodHook.MethodHookParam ->
-                logDebug(
-                    "Hook hit: MessageQueue.${method.name} args=${hookParam.args.joinToString(prefix = "[", postfix = "]") { describeArg(it) }}"
-                )
-
-                val contextSource = hookParam.args.firstOrNull { it != null && it !is String }
-                var changedStringArg = false
-                hookParam.args.forEachIndexed { index, arg ->
-                    if (arg is String) {
-                        val updated = transformOutgoingString(contextSource, arg, "MessageQueue.${method.name} arg[$index]")
-                        if (updated != arg) {
-                            hookParam.args[index] = updated
-                            changedStringArg = true
-                            logDebug("Mutated String arg[$index] in MessageQueue.${method.name}")
-                        }
-                    }
-                }
-
-                val changed = hookParam.args.any { arg -> arg != null && mutateOutgoingData(arg) }
-                if (changed || changedStringArg) {
-                    logger.info("Modified outgoing message in MessageQueue.${method.name}")
-                } else {
-                    logDebug("No mutation performed in MessageQueue.${method.name}")
-                }
-            })
-        }
+        installRestApiMessageConstructorHook()
     }
 
     private fun installRestApiMessageConstructorHook() {
@@ -666,7 +611,7 @@ class KeyIntercept : Plugin() {
                                 logDebug("  [ctor$ctorIdx] arg[$index] NEW content: ${arg.take(80)}")
                                 
                                 try {
-                                    val updated = transformOutgoingString(null, arg, "RestAPIParams.Message[$ctorIdx]::<init> arg[$index]")
+                                    val updated = transformOutgoingString(arg, "RestAPIParams.Message[$ctorIdx]::<init> arg[$index]")
                                     if (updated != arg) {
                                         hookParam.args[index] = updated
                                         lastMessageTransformTime = now
@@ -696,264 +641,15 @@ class KeyIntercept : Plugin() {
         }
     }
 
-    private fun installMessageRequestSendConstructorHooks() {
-        runCatching {
-            val sendClass = Class.forName("com.discord.utilities.messagesend.MessageRequest\$Send")
-            val constructors = sendClass.declaredConstructors
-            if (constructors.isEmpty()) {
-                logger.warn("No MessageRequest.Send constructors found to patch")
-                return
-            }
-
-            constructors.forEach { constructor ->
-                patcher.patch(constructor, Hook { hookParam: XC_MethodHook.MethodHookParam ->
-                    val contextSource = hookParam.args.firstOrNull { it != null && it !is String }
-                    var changed = false
-                    hookParam.args.forEachIndexed { index, arg ->
-                        if (arg is String) {
-                            val updated = transformOutgoingString(
-                                contextSource,
-                                arg,
-                                "MessageRequest.Send::<init> arg[$index]"
-                            )
-                            if (updated != arg) {
-                                hookParam.args[index] = updated
-                                changed = true
-                                logDebug("Mutated MessageRequest.Send constructor String arg[$index]")
-                            }
-                        }
-                    }
-
-                    if (changed) {
-                        logger.info("Modified outgoing message in MessageRequest.Send constructor")
-                    }
-                })
-            }
-
-            logDebug("Hooked MessageRequest.Send constructors: ${constructors.size}")
-        }.onFailure {
-            logger.error("Failed to install MessageRequest.Send constructor hooks", it)
-        }
-    }
-
-    private fun installMessageRequestSendStringArgMethodHooks() {
-        runCatching {
-            val sendClass = Class.forName("com.discord.utilities.messagesend.MessageRequest\$Send")
-            val methods = sendClass.declaredMethods.filter { method ->
-                method.parameterTypes.any { it == String::class.java }
-            }
-
-            if (methods.isEmpty()) {
-                logger.warn("No MessageRequest.Send String-arg methods found to patch")
-                return
-            }
-
-            methods.forEach { method ->
-                patcher.patch(method, Hook { hookParam: XC_MethodHook.MethodHookParam ->
-                    val source = hookParam.thisObject ?: hookParam.args.firstOrNull { it != null && it !is String }
-                    var changed = false
-
-                    hookParam.args.forEachIndexed { index, arg ->
-                        if (arg is String) {
-                            val updated = transformOutgoingString(
-                                source,
-                                arg,
-                                "MessageRequest.Send.${method.name} arg[$index]"
-                            )
-                            if (updated != arg) {
-                                hookParam.args[index] = updated
-                                changed = true
-                                logDebug("Mutated MessageRequest.Send.${method.name} String arg[$index]")
-                            }
-                        }
-                    }
-
-                    if (changed) {
-                        logger.info("Modified outgoing message in MessageRequest.Send.${method.name}")
-                    }
-                })
-            }
-
-            logDebug("Hooked MessageRequest.Send String-arg methods: ${methods.size}")
-        }.onFailure {
-            logger.error("Failed to install MessageRequest.Send String-arg method hooks", it)
-        }
-    }
-
-    private fun installNetworkMessageBodyHook() {
-        runCatching {
-            val builderClass = Class.forName("okhttp3.Request\$Builder")
-            val methodHooks = builderClass.declaredMethods.filter { method ->
-                method.name == "method" &&
-                    method.parameterTypes.size == 2 &&
-                    method.parameterTypes[0] == String::class.java
-            }
-
-            if (methodHooks.isEmpty()) {
-                logger.warn("No okhttp Request.Builder.method hooks found")
-                return
-            }
-
-            methodHooks.forEach { method ->
-                patcher.patch(method, Hook { hookParam: XC_MethodHook.MethodHookParam ->
-                    val httpMethod = hookParam.args.getOrNull(0) as? String ?: return@Hook
-                    if (httpMethod != "POST" && httpMethod != "PUT" && httpMethod != "PATCH") return@Hook
-
-                    val body = hookParam.args.getOrNull(1) ?: return@Hook
-
-                    val urlText = extractRequestBuilderUrl(hookParam.thisObject)
-                    if (!urlText.contains("/messages")) return@Hook
-
-                    val bodyText = requestBodyToUtf8(body) ?: return@Hook
-                    val mutatedBodyText = mutateOutgoingMessageJsonBody(bodyText)
-                    if (mutatedBodyText == bodyText) return@Hook
-
-                    val rebuiltBody = createRequestBodyFromText(body, mutatedBodyText) ?: return@Hook
-                    hookParam.args[1] = rebuiltBody
-                    logger.info("Mutated outgoing /messages request body via network hook")
-                })
-            }
-
-            logDebug("Hooked okhttp Request.Builder.method overloads: ${methodHooks.size}")
-        }.onFailure {
-            logger.error("Failed to install network message body hook", it)
-        }
-    }
-
-    private fun extractRequestBuilderUrl(builder: Any?): String {
-        if (builder == null) return ""
-
-        val direct = runCatching {
-            val field = builder.javaClass.getDeclaredField("url")
-            field.isAccessible = true
-            field.get(builder)?.toString().orEmpty()
-        }.getOrNull()
-        if (!direct.isNullOrEmpty()) return direct
-
-        return runCatching {
-            builder.javaClass.declaredFields
-                .firstOrNull { it.type.name.contains("HttpUrl") }
-                ?.let {
-                    it.isAccessible = true
-                    it.get(builder)?.toString().orEmpty()
-                }.orEmpty()
-        }.getOrDefault("")
-    }
-
-    private fun requestBodyToUtf8(body: Any): String? {
-        return runCatching {
-            val bufferClass = Class.forName("okio.Buffer")
-            val bufferedSinkClass = Class.forName("okio.BufferedSink")
-            val buffer = bufferClass.getConstructor().newInstance()
-            body.javaClass.getMethod("writeTo", bufferedSinkClass).invoke(body, buffer)
-            bufferClass.getMethod("readUtf8").invoke(buffer) as? String
-        }.getOrNull()
-    }
-
-    private fun createRequestBodyFromText(originalBody: Any, text: String): Any? {
-        return runCatching {
-            val requestBodyClass = Class.forName("okhttp3.RequestBody")
-            val mediaType = runCatching {
-                originalBody.javaClass.getMethod("contentType").invoke(originalBody)
-            }.getOrNull()
-
-            val staticCreate = requestBodyClass.methods.firstOrNull { method ->
-                method.name == "create" &&
-                    method.parameterTypes.size == 2 &&
-                    method.parameterTypes[1] == String::class.java
-            }
-            if (staticCreate != null) {
-                return@runCatching staticCreate.invoke(null, mediaType, text)
-            }
-
-            val companion = requestBodyClass.declaredClasses
-                .firstOrNull { it.simpleName == "Companion" }
-                ?.let { companionClass ->
-                    requestBodyClass.getDeclaredField("Companion").apply { isAccessible = true }.get(null)
-                }
-
-            if (companion != null) {
-                val companionCreate = companion.javaClass.methods.firstOrNull { method ->
-                    method.name == "create" &&
-                        method.parameterTypes.size == 2 &&
-                        method.parameterTypes[0] == String::class.java
-                }
-                if (companionCreate != null) {
-                    return@runCatching companionCreate.invoke(companion, text, mediaType)
-                }
-            }
-
-            null
-        }.getOrNull()
-    }
-
-    private fun mutateOutgoingMessageJsonBody(bodyText: String): String {
-        val trimmed = bodyText.trim()
-        if (!trimmed.startsWith("{")) return bodyText
-
-        return runCatching {
-            val root = JSONObject(trimmed)
-            var changed = false
-
-            val content = if (root.has("content") && !root.isNull("content")) {
-                runCatching { root.getString("content") }.getOrNull()
-            } else {
-                null
-            }
-            if (content != null && content.isNotEmpty()) {
-                val updated = applyTransformsWithoutContext(content)
-                if (updated != content) {
-                    root.put("content", updated)
-                    changed = true
-                }
-            }
-
-            val messageObj = runCatching { root.optJSONObject("message") }.getOrNull()
-            if (messageObj != null) {
-                val nestedContent = if (messageObj.has("content") && !messageObj.isNull("content")) {
-                    runCatching { messageObj.getString("content") }.getOrNull()
-                } else {
-                    null
-                }
-                if (nestedContent != null && nestedContent.isNotEmpty()) {
-                    val updatedNested = applyTransformsWithoutContext(nestedContent)
-                    if (updatedNested != nestedContent) {
-                        messageObj.put("content", updatedNested)
-                        changed = true
-                    }
-                }
-            }
-
-            if (changed) root.toString() else bodyText
-        }.getOrElse { bodyText }
-    }
-
-    private fun transformOutgoingString(contextSource: Any?, input: String, origin: String): String {
+    private fun transformOutgoingString(input: String, origin: String): String {
         if (input.isEmpty()) return input
 
-        if (contextSource != null) {
-            val contextual = alterMessage(contextSource, input)
-            if (contextual != input) return contextual
-
-            val sourceClass = contextSource.javaClass.name
-            val sourceSimple = contextSource.javaClass.simpleName
-            val looksLikeSendPayload =
-                sourceClass.contains("MessageRequest", ignoreCase = true) ||
-                    sourceSimple.equals("Send", ignoreCase = true)
-            if (looksLikeSendPayload) {
-                logDebug("Contextual transform no-op for Send payload at $origin; applying fallback transforms")
-                return applyTransformsWithoutContext(input)
-            }
-
-            if (resolveChannelId(contextSource) == null) {
-                logDebug("Context unavailable for $origin; applying fallback transforms")
-                return applyTransformsWithoutContext(input)
-            }
-
+        if (!shouldTransformForCurrentConversation()) {
+            logDebug("Skipping transforms at $origin because current conversation is not whitelisted")
             return input
         }
 
-        logDebug("No non-String context source for $origin; applying fallback transforms")
+        logDebug("Applying fallback transforms for $origin")
         return applyTransformsWithoutContext(input)
     }
 
@@ -962,133 +658,7 @@ class KeyIntercept : Plugin() {
 
         supabasePollExecutor?.shutdownNow()
         supabasePollExecutor = null
-        initialSupabaseSyncComplete = false
         lastMessageTransformTime = 0
-    }
-
-    private fun mutateOutgoingData(candidate: Any): Boolean {
-        if (!initialSupabaseSyncComplete) {
-            logDebug("Skipping mutation because initial Supabase sync is not complete yet")
-            return false
-        }
-
-        logDebug("Inspecting candidate ${candidate.javaClass.name}")
-        var changed = false
-
-        if (isSendPayload(candidate) && wrapPreprocessingCallback(candidate)) {
-            changed = true
-        }
-
-        val nestedMessage = getFieldValue(candidate, MESSAGE_FIELD)
-        if (nestedMessage == null) {
-            logDebug("No nested '$MESSAGE_FIELD' field on ${candidate.javaClass.simpleName}")
-        }
-        if (nestedMessage != null && mutateContentField(nestedMessage, "Message")) {
-            changed = true
-        }
-
-        if (mutateContentField(candidate, candidate.javaClass.simpleName)) {
-            changed = true
-        }
-
-        if (mutateKnownSendTextFields(candidate, candidate.javaClass.simpleName)) {
-            changed = true
-        }
-
-        return changed
-    }
-
-    private fun isSendPayload(target: Any): Boolean {
-        val className = target.javaClass.name
-        val simpleName = target.javaClass.simpleName
-        return className.contains("MessageRequest", ignoreCase = true) ||
-            simpleName.equals("Send", ignoreCase = true)
-    }
-
-    private fun mutateKnownSendTextFields(target: Any, sourceName: String): Boolean {
-        if (!isSendPayload(target)) return false
-
-        val fieldCandidates = arrayOf(
-            "messageContent",
-            "rawContent",
-            "textContent",
-            "text",
-            "body"
-        )
-
-        var changed = false
-        for (fieldName in fieldCandidates) {
-            val raw = getFieldValue(target, fieldName)
-            val value = raw as? String ?: continue
-            if (value.isEmpty()) continue
-
-            val updated = transformOutgoingString(target, value, "$sourceName.$fieldName")
-            if (updated == value) continue
-
-            if (setFieldValue(target, fieldName, updated)) {
-                changed = true
-                logger.info("Mutated $sourceName.$fieldName")
-            }
-        }
-
-        // Fallback for obfuscated/new field names: only inspect fields on the Send object itself.
-        // This avoids nested/user object corruption while still catching non-constructor send paths.
-        val allFields = getAllDeclaredFields(target)
-        for (field in allFields) {
-            val fieldName = field.name
-            val lower = fieldName.lowercase()
-            val looksLikeMeta =
-                lower.contains("id") ||
-                    lower.contains("nonce") ||
-                    lower.contains("token") ||
-                    lower.contains("channel") ||
-                    lower.contains("guild") ||
-                    lower.contains("user") ||
-                    lower.contains("session") ||
-                    lower.contains("application")
-            if (looksLikeMeta) continue
-
-            val currentValue = runCatching {
-                field.isAccessible = true
-                field.get(target)
-            }.getOrNull() as? String ?: continue
-            if (currentValue.isEmpty()) continue
-
-            val updated = transformOutgoingString(target, currentValue, "$sourceName.$fieldName (fallback)")
-            if (updated == currentValue) continue
-
-            val wrote = runCatching {
-                field.isAccessible = true
-                field.set(target, updated)
-                true
-            }.getOrDefault(false)
-            if (wrote) {
-                changed = true
-                logger.info("Mutated $sourceName.$fieldName (fallback)")
-            }
-        }
-
-        return changed
-    }
-
-    private fun getAllDeclaredFields(target: Any): List<java.lang.reflect.Field> {
-        val out = ArrayList<java.lang.reflect.Field>()
-        var current: Class<*>? = target.javaClass
-        while (current != null && current != Any::class.java) {
-            out.addAll(current.declaredFields)
-            current = current.superclass
-        }
-        return out
-    }
-
-    private fun checkWhitelist(serverName: String): Boolean {
-        if (whitelist.isEmpty() || whitelist.all { it.serverName == "Example Server" }) {
-            logDebug("Whitelist is empty, allowing all servers by default")
-            return true
-        }
-        val allowed = whitelist.any { it.serverName == serverName }
-        logDebug("Whitelist check for '$serverName' => $allowed (allowed=${whitelist.map { it.serverName }})")
-        return allowed
     }
 
     private fun shouldApplyRules(): Boolean = config.rulesEnd > System.currentTimeMillis()
@@ -1305,96 +875,26 @@ class KeyIntercept : Plugin() {
         return word.startsWith("http://") || word.startsWith("https://") || word.startsWith("www.")
     }
 
-    private fun parseLongLike(value: Any?): Long? {
-        return when (value) {
-            is Long -> value
-            is Int -> value.toLong()
-            is Short -> value.toLong()
-            is String -> value.toLongOrNull()
-            else -> null
-        }
-    }
-
-    private fun asNonBlankString(value: Any?): String? {
-        val text = runCatching { value?.toString() }.getOrNull() ?: return null
-        val trimmed = text.trim()
-        return if (trimmed.isEmpty()) null else trimmed
-    }
-
-    private fun readLongField(target: Any, vararg fieldNames: String): Long? {
-        for (fieldName in fieldNames) {
-            val parsed = parseLongLike(getFieldValue(target, fieldName))
-            if (parsed != null) return parsed
-        }
-        return null
-    }
-
-    private fun resolveChannelId(source: Any): Long? {
-        readLongField(source, "channelId", "channel_id")?.let { return it }
-
-        val sourceChannel = getFieldValue(source, "channel")
-        if (sourceChannel != null) {
-            readLongField(sourceChannel, "id", "channelId", "channel_id")?.let { return it }
+    private fun shouldTransformForCurrentConversation(): Boolean {
+        val context = resolveCurrentConversationContext()
+        if (context == null) {
+            logDebug("Could not resolve current conversation context; skipping transforms")
+            return false
         }
 
-        val messageObj = getFieldValue(source, MESSAGE_FIELD)
-        if (messageObj != null) {
-            readLongField(messageObj, "channelId", "channel_id")?.let { return it }
-
-            val messageChannel = getFieldValue(messageObj, "channel")
-            if (messageChannel != null) {
-                readLongField(messageChannel, "id", "channelId", "channel_id")?.let { return it }
-            }
+        if (context.channelName.contains("sfw", ignoreCase = true) &&
+            !context.channelName.contains("nsfw", ignoreCase = true)
+        ) {
+            logDebug("Skipping transforms because channel '${context.channelName}' is SFW")
+            return false
         }
 
-        return null
-    }
-
-    private fun resolveConversationContext(source: Any): ConversationContext {
-        val channelId = resolveChannelId(source)
-        if (channelId == null) {
-            logDebug("Could not resolve channelId from ${source.javaClass.name}")
-            return ConversationContext(null, "Unknown Channel", "Unknown DM", "Unknown Server")
-        }
-
-        val channel = StoreStream.getChannels().getChannel(channelId)
-        if (channel == null) {
-            logDebug("StoreStream returned null channel for channelId=$channelId")
-            return ConversationContext(channelId, "Unknown Channel", "Unknown DM", "Unknown Server")
-        }
-
-        val channelWrapper = ChannelWrapper(channel)
-        val channelName = asNonBlankString(
-            runCatching { ChannelUtils.getDisplayName(channel) as Any? }.getOrNull()
-        ) ?: "Unknown Channel"
-
-        val isDm = runCatching { channelWrapper.isDM() }.getOrDefault(false)
-        val dmName = if (isDm) {
-            channelName.takeIf { it != "Unknown Channel" } ?: "Unknown DM"
-        } else {
-            "Unknown DM"
-        }
-
-        val guildId = runCatching { channelWrapper.guildId }.getOrNull()
-        val serverName = if (guildId != null && guildId != 0L) {
-            val guild = StoreStream.getGuilds().getGuild(guildId)
-            (guild?.let {
-                asNonBlankString(getFieldValue(it, "name"))
-                    ?: asNonBlankString(getFieldValue(it, "guildName"))
-            }) ?: "Unknown Server"
-        } else {
-            "Unknown Server"
-        }
-
-        return ConversationContext(channelId, channelName, dmName, serverName)
-    }
-
-    private fun isWhitelisted(context: ConversationContext): Boolean {
         val names = listOf(context.channelName, context.dmName, context.serverName)
-            .filter { it != "Unknown Channel" && it != "Unknown DM" && it != "Unknown Server" }
+            .map { it.trim() }
+            .filter { it.isNotEmpty() && !it.equals("Unknown Channel", ignoreCase = true) && !it.equals("Unknown DM", ignoreCase = true) && !it.equals("Unknown Server", ignoreCase = true) }
 
         if (names.isEmpty()) {
-            logDebug("No resolvable context names found for whitelist check")
+            logDebug("No usable channel/DM/server names for whitelist matching")
             return false
         }
 
@@ -1403,44 +903,75 @@ class KeyIntercept : Plugin() {
         return matched
     }
 
-    private fun alterMessage(source: Any, content: String): String {
-        val context = resolveConversationContext(source)
-        val channelName = context.channelName
-        val dmName = context.dmName
-        val serverName = context.serverName
+    private fun resolveCurrentConversationContext(): ConversationContext? {
+        return runCatching {
+            val selectedStore = StoreStream::class.java.getMethod("getChannelsSelected").invoke(null)
+                ?: return@runCatching null
 
-        logDebug(
-            "alterMessage source=${source.javaClass.simpleName}, channelId=${context.channelId}, channel='$channelName', dm='$dmName', guild='$serverName', input='${preview(content)}'"
-        )
+            val channelId = listOf("getId", "getChannelId", "getSelectedChannelId")
+                .asSequence()
+                .mapNotNull { methodName ->
+                    runCatching {
+                        val value = selectedStore.javaClass.getMethod(methodName).invoke(selectedStore)
+                        when (value) {
+                            is Long -> value
+                            is Int -> value.toLong()
+                            is String -> value.toLongOrNull()
+                            else -> null
+                        }
+                    }.getOrNull()
+                }
+                .firstOrNull()
+                ?: return@runCatching null
 
-        if (!isWhitelisted(context)) {
-            logDebug("Skipping mutation because target is not whitelisted")
-            return content
-        }
-        if (channelName.contains("sfw", ignoreCase = true) && !channelName.contains("nsfw", ignoreCase = true)) {
-            logDebug("Skipping mutation because channel '$channelName' is SFW")
-            return content
-        }
+            val channel = StoreStream.getChannels().getChannel(channelId)
+                ?: return@runCatching null
 
-        fun applyStage(name: String, input: String, transform: (String) -> String): String {
-            val output = transform(input)
-            if (output == input) {
-                logDebug("Stage '$name' produced no changes")
+            val channelWrapper = ChannelWrapper(channel)
+            val channelName = runCatching {
+                ChannelUtils.getDisplayName(channel)?.toString().orEmpty().trim()
+            }.getOrDefault("").ifEmpty { "Unknown Channel" }
+
+            val isDm = runCatching { channelWrapper.isDM() }.getOrDefault(false)
+            val dmName = if (isDm) channelName else "Unknown DM"
+
+            val guildId = runCatching { channelWrapper.guildId }.getOrNull()
+            val serverName = if (guildId != null && guildId != 0L) {
+                val guild = StoreStream.getGuilds().getGuild(guildId)
+                runCatching {
+                    val nameMethod = guild?.javaClass?.methods?.firstOrNull { it.name == "getName" && it.parameterCount == 0 }
+                    val name = nameMethod?.invoke(guild)?.toString()?.trim().orEmpty()
+                    if (name.isEmpty()) {
+                        val nameField = guild?.javaClass?.declaredFields?.firstOrNull { it.name == "name" }
+                        if (nameField != null) {
+                            nameField.isAccessible = true
+                            nameField.get(guild)?.toString()?.trim().orEmpty()
+                        } else {
+                            ""
+                        }
+                    } else {
+                        name
+                    }
+                }.getOrDefault("").ifEmpty { "Unknown Server" }
             } else {
-                logDebug("Stage '$name' changed text to '${preview(output)}'")
+                "Unknown Server"
             }
-            return output
+
+            ConversationContext(channelName = channelName, dmName = dmName, serverName = serverName)
+        }.onFailure {
+            logger.error("Failed to resolve current conversation context", it)
+        }.getOrNull()
+    }
+
+    private fun checkWhitelist(serverName: String): Boolean {
+        if (whitelist.isEmpty() || whitelist.all { it.serverName == "Example Server" }) {
+            logDebug("Whitelist empty/default; allowing all servers")
+            return true
         }
 
-        var modified = content
-        modified = applyStage("rules", modified, ::applyRules)
-        modified = applyStage("uwu", modified, ::applyUwu)
-        modified = applyStage("horny", modified, ::applyHorny)
-        modified = applyStage("pet", modified, ::applyPet)
-        modified = applyStage("bimbo", modified, ::applyBimbo)
-        modified = applyStage("gag", modified, ::applyGag)
-        modified = applyStage("drone", modified, ::applyDrone)
-        return modified
+        val allowed = whitelist.any { it.serverName.equals(serverName, ignoreCase = true) }
+        logDebug("Whitelist check for '$serverName' => $allowed")
+        return allowed
     }
 
     private fun applyTransformsWithoutContext(content: String): String {
@@ -1455,91 +986,4 @@ class KeyIntercept : Plugin() {
         return modified
     }
 
-    private fun mutateContentField(target: Any, sourceName: String): Boolean {
-        val content = getFieldValue(target, CONTENT_FIELD) as? String
-        if (content == null) {
-            logDebug("$sourceName has no '$CONTENT_FIELD' String field (class=${target.javaClass.name})")
-            return false
-        }
-
-        val updated = alterMessage(target, content)
-        if (updated == content) {
-            logDebug("No content update for $sourceName")
-            return false
-        }
-
-        return setFieldValue(target, CONTENT_FIELD, updated).also { success ->
-            if (success) logger.info("Mutated $sourceName.content")
-            if (!success) logDebug("Failed to write '$CONTENT_FIELD' back to ${target.javaClass.name}")
-        }
-    }
-
-    @Suppress("UNCHECKED_CAST")
-    private fun wrapPreprocessingCallback(target: Any): Boolean {
-        val callback = getFieldValue(target, PREPROCESSING_FIELD) as? Function1<*, *>
-        if (callback == null) {
-            logDebug("No '$PREPROCESSING_FIELD' callback on ${target.javaClass.name}")
-            return false
-        }
-
-        if (!wrappedCallbacks.add(callback)) {
-            logDebug("Callback already wrapped for ${target.javaClass.name}")
-            return false
-        }
-
-        val original = callback as Function1<Any?, Any?>
-        val wrapped: (Any?) -> Any? = { input ->
-            logDebug("Preprocessing callback invoked for ${target.javaClass.simpleName}")
-            val transformedInput = when (input) {
-                is String -> transformOutgoingString(target, input, "Send.onPreprocessing input")
-                null -> null
-                else -> input
-            }
-
-            val originalResult = original.invoke(transformedInput)
-            val transformedResult = when (originalResult) {
-                is String -> transformOutgoingString(target, originalResult, "Send.onPreprocessing result")
-                null -> null
-                else -> originalResult
-            }
-
-            transformedResult
-        }
-
-        val replaced = setFieldValue(target, PREPROCESSING_FIELD, wrapped)
-        if (replaced) logger.info("Wrapped Send.onPreprocessing")
-        if (!replaced) logDebug("Failed to replace '$PREPROCESSING_FIELD' on ${target.javaClass.name}")
-        return replaced
-    }
-
-    private fun getFieldValue(target: Any, fieldName: String): Any? {
-        var currentClass: Class<*>? = target.javaClass
-        while (currentClass != null && currentClass != Any::class.java) {
-            val field = currentClass.declaredFields.firstOrNull { it.name == fieldName }
-            if (field != null) {
-                return runCatching {
-                    field.isAccessible = true
-                    field.get(target)
-                }.getOrNull()
-            }
-            currentClass = currentClass.superclass
-        }
-        return null
-    }
-
-    private fun setFieldValue(target: Any, fieldName: String, value: Any): Boolean {
-        var currentClass: Class<*>? = target.javaClass
-        while (currentClass != null && currentClass != Any::class.java) {
-            val field = currentClass.declaredFields.firstOrNull { it.name == fieldName }
-            if (field != null) {
-                return runCatching {
-                    field.isAccessible = true
-                    field.set(target, value)
-                    true
-                }.getOrDefault(false)
-            }
-            currentClass = currentClass.superclass
-        }
-        return false
-    }
 }
