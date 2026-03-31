@@ -1,8 +1,12 @@
-version = "4.1.0" // Plugin version. Increment this to trigger the updater
+version = "4.1.1" // Plugin version. Increment this to trigger the updater
 description = "A plugin for discord which helps you talk unproperly. Basically, this is a lil program that sits in the back of your discord. When you send a message it will edit it in some way dependent upon a list of rules"
 
 aliucord {
     changelog = """
+        # 4.1.1
+        * Fixed an issue where the plugin would fail to load if the config id resolution failed on startup. It will now keep retrying for up to 30 seconds before giving up and using the fallback config id, which should prevent the plugin from being completely unusable in cases where the Supabase access mapping is not properly configured or temporarily unavailable.
+        * Fixed an issue where the whitelist would not be properly applied to messages.
+
         # 4.1.0
         * Full Release
 
