@@ -905,6 +905,137 @@ class KeyIntercept : Plugin() {
         return matched
     }
 
+    private fun extractLongValues(value: Any?): List<Long> {
+        if (value == null) return emptyList()
+
+        return when (value) {
+            is Long -> listOf(value)
+            is Int -> listOf(value.toLong())
+            is Short -> listOf(value.toLong())
+            is Byte -> listOf(value.toLong())
+            is String -> value.toLongOrNull()?.let { listOf(it) } ?: emptyList()
+            is Iterable<*> -> value.flatMap { extractLongValues(it) }
+            is Array<*> -> value.flatMap { extractLongValues(it) }
+            else -> {
+                if (value.javaClass.isArray) {
+                    runCatching {
+                        val size = java.lang.reflect.Array.getLength(value)
+                        (0 until size).flatMap { idx ->
+                            extractLongValues(java.lang.reflect.Array.get(value, idx))
+                        }
+                    }.getOrDefault(emptyList())
+                } else {
+                    emptyList()
+                }
+            }
+        }
+    }
+
+    private fun extractUserName(user: Any?): String {
+        if (user == null) return ""
+
+        val methodOrder = listOf("getGlobalName", "getUsername", "getName", "getNick")
+        for (methodName in methodOrder) {
+            val fromMethod = runCatching {
+                val method = user.javaClass.methods.firstOrNull {
+                    it.name == methodName && it.parameterCount == 0
+                } ?: return@runCatching ""
+                method.invoke(user)?.toString()?.trim().orEmpty()
+            }.getOrDefault("")
+
+            if (fromMethod.isNotEmpty()) return fromMethod
+        }
+
+        val fieldOrder = listOf("globalName", "username", "name", "nick")
+        for (fieldName in fieldOrder) {
+            val fromField = runCatching {
+                val field = user.javaClass.declaredFields.firstOrNull { it.name == fieldName }
+                    ?: return@runCatching ""
+                field.isAccessible = true
+                field.get(user)?.toString()?.trim().orEmpty()
+            }.getOrDefault("")
+
+            if (fromField.isNotEmpty()) return fromField
+        }
+
+        return ""
+    }
+
+    private fun resolveDmRecipientName(channel: Any?, fallbackName: String): String {
+        if (channel == null) return fallbackName
+
+        return runCatching {
+            val currentUserId = resolveCurrentDiscordId()
+
+            val recipientIds = LinkedHashSet<Long>()
+            val recipientMethodNames = listOf(
+                "getRecipientId",
+                "getRecipientIds",
+                "getRecipients",
+                "getRawRecipients"
+            )
+
+            for (methodName in recipientMethodNames) {
+                val methodIds = runCatching {
+                    val method = channel.javaClass.methods.firstOrNull {
+                        it.name == methodName && it.parameterCount == 0
+                    } ?: return@runCatching emptyList<Long>()
+                    extractLongValues(method.invoke(channel))
+                }.getOrDefault(emptyList())
+
+                recipientIds.addAll(methodIds)
+            }
+
+            if (recipientIds.isEmpty()) {
+                val fieldNames = listOf("recipientId", "recipientIds", "recipients")
+                for (fieldName in fieldNames) {
+                    val fieldIds = runCatching {
+                        val field = channel.javaClass.declaredFields.firstOrNull { it.name == fieldName }
+                            ?: return@runCatching emptyList<Long>()
+                        field.isAccessible = true
+                        extractLongValues(field.get(channel))
+                    }.getOrDefault(emptyList())
+                    recipientIds.addAll(fieldIds)
+                }
+            }
+
+            if (currentUserId != null) {
+                recipientIds.remove(currentUserId)
+            }
+
+            if (recipientIds.isEmpty()) return@runCatching fallbackName
+
+            val usersStore = StoreStream.getUsers()
+            val getUserMethod = usersStore.javaClass.methods.firstOrNull {
+                it.name == "getUser" && it.parameterCount == 1
+            }
+
+            val recipientName = recipientIds.asSequence().mapNotNull { recipientId ->
+                val user = runCatching {
+                    if (getUserMethod == null) {
+                        null
+                    } else {
+                        val paramType = getUserMethod.parameterTypes.firstOrNull()
+                        if (paramType == java.lang.Long.TYPE || paramType == java.lang.Long::class.java) {
+                            getUserMethod.invoke(usersStore, recipientId)
+                        } else if (paramType == java.lang.Integer.TYPE || paramType == java.lang.Integer::class.java) {
+                            getUserMethod.invoke(usersStore, recipientId.toInt())
+                        } else if (paramType == String::class.java) {
+                            getUserMethod.invoke(usersStore, recipientId.toString())
+                        } else {
+                            null
+                        }
+                    }
+                }.getOrNull()
+
+                val name = extractUserName(user)
+                name.takeIf { it.isNotEmpty() }
+            }.firstOrNull()
+
+            recipientName ?: fallbackName
+        }.getOrDefault(fallbackName)
+    }
+
     private fun resolveCurrentConversationContext(): ConversationContext? {
         return runCatching {
             val selectedStore = StoreStream::class.java.getMethod("getChannelsSelected").invoke(null)
@@ -935,7 +1066,11 @@ class KeyIntercept : Plugin() {
             }.getOrDefault("").ifEmpty { "Unknown Channel" }
 
             val isDm = runCatching { channelWrapper.isDM() }.getOrDefault(false)
-            val dmName = if (isDm) channelName else "Unknown DM"
+            val dmName = if (isDm) {
+                resolveDmRecipientName(channel, channelName).ifEmpty { channelName }
+            } else {
+                "Unknown DM"
+            }
 
             val guildId = runCatching { channelWrapper.guildId }.getOrNull()
             val serverName = if (guildId != null && guildId != 0L) {
