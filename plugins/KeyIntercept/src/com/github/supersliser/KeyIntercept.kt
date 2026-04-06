@@ -1015,6 +1015,42 @@ class KeyIntercept : Plugin() {
         return ""
     }
 
+    private fun extractUsernameOnly(user: Any?): String {
+        if (user == null) return ""
+
+        val methodOrder = listOf("getUsername", "getUserName", "username", "getUserTag")
+        for (methodName in methodOrder) {
+            val fromMethod = runCatching {
+                val method = user.javaClass.methods.firstOrNull {
+                    it.name == methodName && it.parameterCount == 0
+                } ?: return@runCatching ""
+                method.invoke(user)?.toString()?.trim().orEmpty()
+            }.getOrDefault("")
+
+            if (fromMethod.isNotEmpty()) {
+                logger.warn("[KeyIntercept] Username-only resolved from method '$methodName': '$fromMethod'")
+                return fromMethod
+            }
+        }
+
+        val fieldOrder = listOf("username", "userName", "user_tag", "tag")
+        for (fieldName in fieldOrder) {
+            val fromField = runCatching {
+                val field = user.javaClass.declaredFields.firstOrNull { it.name == fieldName }
+                    ?: return@runCatching ""
+                field.isAccessible = true
+                field.get(user)?.toString()?.trim().orEmpty()
+            }.getOrDefault("")
+
+            if (fromField.isNotEmpty()) {
+                logger.warn("[KeyIntercept] Username-only resolved from field '$fieldName': '$fromField'")
+                return fromField
+            }
+        }
+
+        return ""
+    }
+
     private fun getChannelMemberObject(channel: Any?): Any? {
         if (channel == null) return null
 
@@ -1070,8 +1106,39 @@ class KeyIntercept : Plugin() {
     private fun resolveUserNameFromMember(channel: Any?): String {
         val member = getChannelMemberObject(channel) ?: return ""
 
-        // First try direct username-ish methods/fields on the ThreadMember.
-        val methodCandidates = listOf("getUsername", "getUserName", "getName", "getNick")
+        logger.warn("[KeyIntercept] [resolveDmRecipientName] Inspecting ThreadMember class: ${member.javaClass.name}")
+
+        // First try the nested user object. This is usually where Discord keeps the real username.
+        val nestedUser = runCatching {
+            val method = member.javaClass.methods.firstOrNull {
+                (it.name == "getUser" || it.name == "user") && it.parameterCount == 0
+            }
+            if (method != null) {
+                val result = method.invoke(member)
+                logger.warn("[KeyIntercept] [resolveDmRecipientName] ThreadMember.${method.name}() -> ${result?.javaClass?.name}")
+                result
+            } else {
+                val field = member.javaClass.declaredFields.firstOrNull {
+                    it.name.equals("user", ignoreCase = true)
+                }
+                if (field != null) {
+                    field.isAccessible = true
+                    val result = field.get(member)
+                    logger.warn("[KeyIntercept] [resolveDmRecipientName] ThreadMember.${field.name} field -> ${result?.javaClass?.name}")
+                    result
+                } else {
+                    null
+                }
+            }
+        }.getOrNull()
+
+        val nestedUsername = extractUsernameOnly(nestedUser)
+        if (nestedUsername.isNotEmpty()) {
+            return nestedUsername
+        }
+
+        // Fall back to username-like properties directly on ThreadMember.
+        val methodCandidates = listOf("getUsername", "getUserName", "username", "getUserTag")
         for (methodName in methodCandidates) {
             val name = runCatching {
                 val method = member.javaClass.methods.firstOrNull {
@@ -1083,7 +1150,7 @@ class KeyIntercept : Plugin() {
             if (name.isNotEmpty()) return name
         }
 
-        val fieldCandidates = listOf("username", "userName", "name", "nick")
+        val fieldCandidates = listOf("username", "userName", "user_tag", "tag")
         for (fieldName in fieldCandidates) {
             val name = runCatching {
                 val field = member.javaClass.declaredFields.firstOrNull { it.name == fieldName }
@@ -1095,15 +1162,8 @@ class KeyIntercept : Plugin() {
             if (name.isNotEmpty()) return name
         }
 
-        // If member can return a nested user object, use the normal user-name extraction path.
-        val nestedUser = runCatching {
-            val method = member.javaClass.methods.firstOrNull {
-                (it.name == "getUser" || it.name == "user") && it.parameterCount == 0
-            } ?: return@runCatching null
-            method.invoke(member)
-        }.getOrNull()
-
-        return extractUserName(nestedUser)
+        // Last resort: use the generic extractor on the member itself.
+        return extractUsernameOnly(member).ifEmpty { extractUserName(member) }
     }
 
     private fun hasRecipientIds(channel: Any?): Boolean {
