@@ -980,6 +980,45 @@ class KeyIntercept : Plugin() {
         return ""
     }
 
+    private fun hasRecipientIds(channel: Any?): Boolean {
+        if (channel == null) return false
+
+        return runCatching {
+            val recipientMethodNames = listOf(
+                "getRecipientId",
+                "getRecipientIds",
+                "getRecipients",
+                "getRawRecipients"
+            )
+
+            for (methodName in recipientMethodNames) {
+                val hasMethod = runCatching {
+                    val method = channel.javaClass.methods.firstOrNull {
+                        it.name == methodName && it.parameterCount == 0
+                    } ?: return@runCatching false
+                    val result = method.invoke(channel)
+                    extractLongValues(result).isNotEmpty()
+                }.getOrDefault(false)
+
+                if (hasMethod) return@runCatching true
+            }
+
+            val fieldNames = listOf("recipientId", "recipientIds", "recipients")
+            for (fieldName in fieldNames) {
+                val hasField = runCatching {
+                    val field = channel.javaClass.declaredFields.firstOrNull { it.name == fieldName }
+                        ?: return@runCatching false
+                    field.isAccessible = true
+                    extractLongValues(field.get(channel)).isNotEmpty()
+                }.getOrDefault(false)
+
+                if (hasField) return@runCatching true
+            }
+
+            false
+        }.getOrDefault(false)
+    }
+
     private fun resolveDmRecipientName(channel: Any?, fallbackName: String): String {
         if (channel == null) return fallbackName
 
@@ -1018,11 +1057,16 @@ class KeyIntercept : Plugin() {
                 }
             }
 
+            logDebug("DM recipient resolution: found ${recipientIds.size} recipient IDs")
+
             if (currentUserId != null) {
                 recipientIds.remove(currentUserId)
             }
 
-            if (recipientIds.isEmpty()) return@runCatching fallbackName
+            if (recipientIds.isEmpty()) {
+                logDebug("DM recipient resolution: no valid recipient IDs after filtering")
+                return@runCatching fallbackName
+            }
 
             val usersStore = StoreStream.getUsers()
             val getUserMethod = usersStore.javaClass.methods.firstOrNull {
@@ -1048,9 +1092,11 @@ class KeyIntercept : Plugin() {
                 }.getOrNull()
 
                 val name = extractUserName(user)
+                logDebug("DM recipient name extraction: extracted '$name' from user object")
                 name.takeIf { it.isNotEmpty() }
             }.firstOrNull()
 
+            logDebug("DM recipient resolution: resolved name='$recipientName' (fallback='$fallbackName')")
             recipientName ?: fallbackName
         }.getOrDefault(fallbackName)
     }
@@ -1084,36 +1130,49 @@ class KeyIntercept : Plugin() {
                 ChannelUtils.getDisplayName(channel)?.toString().orEmpty().trim()
             }.getOrDefault("").ifEmpty { "Unknown Channel" }
 
-            val isDm = runCatching { channelWrapper.isDM() }.getOrDefault(false)
+            // Try isDM() first, but also fall back to checking for recipient IDs
+            val isDmViaMethod = runCatching { channelWrapper.isDM() }.getOrDefault(false)
+            val isDmViaRecipients = hasRecipientIds(channel)
+            val isDm = isDmViaMethod || isDmViaRecipients
+
+            logDebug("DM detection: isDM()=$isDmViaMethod, hasRecipients=$isDmViaRecipients, final isDm=$isDm")
+
             val dmName = if (isDm) {
-                resolveDmRecipientName(channel, channelName).ifEmpty { channelName }
+                val resolved = resolveDmRecipientName(channel, channelName)
+                logDebug("Resolved DM name: '$resolved' (fallback was: '$channelName')")
+                resolved.ifEmpty { channelName }
             } else {
                 "Unknown DM"
             }
 
-            val guildId = runCatching { channelWrapper.guildId }.getOrNull()
-            val serverName = if (guildId != null && guildId != 0L) {
-                val guild = StoreStream.getGuilds().getGuild(guildId)
-                runCatching {
-                    val nameMethod =
-                        guild?.javaClass?.methods?.firstOrNull { it.name == "getName" && it.parameterCount == 0 }
-                    val name = nameMethod?.invoke(guild)?.toString()?.trim().orEmpty()
-                    if (name.isEmpty()) {
-                        val nameField = guild?.javaClass?.declaredFields?.firstOrNull { it.name == "name" }
-                        if (nameField != null) {
-                            nameField.isAccessible = true
-                            nameField.get(guild)?.toString()?.trim().orEmpty()
+            // Only resolve server info if it's NOT a DM
+            val serverName = if (!isDm) {
+                val guildId = runCatching { channelWrapper.guildId }.getOrNull()
+                if (guildId != null && guildId != 0L) {
+                    val guild = StoreStream.getGuilds().getGuild(guildId)
+                    runCatching {
+                        val nameMethod = guild?.javaClass?.methods?.firstOrNull { it.name == "getName" && it.parameterCount == 0 }
+                        val name = nameMethod?.invoke(guild)?.toString()?.trim().orEmpty()
+                        if (name.isEmpty()) {
+                            val nameField = guild?.javaClass?.declaredFields?.firstOrNull { it.name == "name" }
+                            if (nameField != null) {
+                                nameField.isAccessible = true
+                                nameField.get(guild)?.toString()?.trim().orEmpty()
+                            } else {
+                                ""
+                            }
                         } else {
-                            ""
+                            name
                         }
-                    } else {
-                        name
-                    }
-                }.getOrDefault("").ifEmpty { "Unknown Server" }
+                    }.getOrDefault("").ifEmpty { "Unknown Server" }
+                } else {
+                    "Unknown Server"
+                }
             } else {
                 "Unknown Server"
             }
 
+            logDebug("Context resolved: isDm=$isDm, channelName='$channelName', dmName='$dmName', serverName='$serverName'")
             ConversationContext(channelName = channelName, dmName = dmName, serverName = serverName)
         }.onFailure {
             logger.error("Failed to resolve current conversation context", it)
