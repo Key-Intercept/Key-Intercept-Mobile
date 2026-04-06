@@ -934,17 +934,17 @@ class KeyIntercept : Plugin() {
     private fun extractUserName(user: Any?): String {
         if (user == null) return ""
 
-        val methodOrder = listOf("getUsername", "getUserName")
-        for (methodName in methodOrder) {
-            val fromMethod = runCatching {
-                val method = user.javaClass.methods.firstOrNull {
-                    it.name == methodName && it.parameterCount == 0
-                } ?: return@runCatching ""
-                method.invoke(user)?.toString()?.trim().orEmpty()
-            }.getOrDefault("")
+        // val methodOrder = listOf("getUsername", "getUserName")
+        // for (methodName in methodOrder) {
+        //     val fromMethod = runCatching {
+        //         val method = user.javaClass.methods.firstOrNull {
+        //             it.name == methodName && it.parameterCount == 0
+        //         } ?: return@runCatching ""
+        //         method.invoke(user)?.toString()?.trim().orEmpty()
+        //     }.getOrDefault("")
 
-            if (fromMethod.isNotEmpty()) return fromMethod
-        }
+        //     if (fromMethod.isNotEmpty()) return fromMethod
+        // }
 
         val fieldOrder = listOf("username", "userName")
         for (fieldName in fieldOrder) {
