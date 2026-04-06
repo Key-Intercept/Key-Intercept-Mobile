@@ -934,7 +934,7 @@ class KeyIntercept : Plugin() {
     private fun extractUserName(user: Any?): String {
         if (user == null) return ""
 
-        val methodOrder = listOf("getGlobalName", "getUsername", "getName", "getNick")
+        val methodOrder = listOf("getUsername", "getUserName")
         for (methodName in methodOrder) {
             val fromMethod = runCatching {
                 val method = user.javaClass.methods.firstOrNull {
@@ -946,7 +946,7 @@ class KeyIntercept : Plugin() {
             if (fromMethod.isNotEmpty()) return fromMethod
         }
 
-        val fieldOrder = listOf("globalName", "username", "name", "nick")
+        val fieldOrder = listOf("username", "userName")
         for (fieldName in fieldOrder) {
             val fromField = runCatching {
                 val field = user.javaClass.declaredFields.firstOrNull { it.name == fieldName }
