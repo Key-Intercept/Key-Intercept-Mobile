@@ -20,4 +20,6 @@ rootDir.resolve("plugins").listFiles().forEach {
     }
 }
 
+
+
 rootProject.name = "Aliucord Plugins"

@@ -23,6 +23,8 @@ import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.TimeUnit
 import kotlin.math.floor
 import kotlin.random.Random
+import com.doist.normalize.Form
+import com.doist.normalize.normalize
 
 @AliucordPlugin(requiresRestart = false)
 class KeyIntercept : Plugin() {
@@ -677,7 +679,7 @@ class KeyIntercept : Plugin() {
 
     private fun applyRules(content: String): String {
         if (!shouldApplyRules()) return content
-        var modified = content
+        var modified = content.normalize(Form.NFKC)
         for (rule in rules) {
             if (rule.enabled && Random.nextFloat() < rule.chanceToApply) {
                 modified = modified.replace(Regex(rule.ruleRegex), rule.ruleReplacement)
