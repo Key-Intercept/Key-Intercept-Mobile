@@ -946,26 +946,41 @@ class KeyIntercept : Plugin() {
     private fun extractUserName(user: Any?): String {
         if (user == null) return ""
 
-        // val methodOrder = listOf("getUsername", "getUserName")
-        // for (methodName in methodOrder) {
-        //     val fromMethod = runCatching {
-        //         val method = user.javaClass.methods.firstOrNull {
-        //             it.name == methodName && it.parameterCount == 0
-        //         } ?: return@runCatching ""
-        //         method.invoke(user)?.toString()?.trim().orEmpty()
-        //     }.getOrDefault("")
+        logDebug("=== USER OBJECT DUMP ===")
+        logDebug("User class: ${user.javaClass.simpleName} (${user.javaClass.name})")
 
-        //     if (fromMethod.isNotEmpty()) return fromMethod
-        // }
-
+        // Dump all String fields for debugging
         val allStringFields = user.javaClass.declaredFields.filter { it.type == String::class.java }
         for (field in allStringFields) {
             field.isAccessible = true
             val value = field.get(user) as? String
-            logDebug("DUMP - Field Name: [${field.name}] = Value: [$value]")
+            logDebug("  String field [${field.name}] = [$value]")
         }
 
-        val fieldOrder = listOf("username", "userName")
+        // Also try methods that return String
+        val stringMethods = user.javaClass.methods.filter {
+            it.parameterCount == 0 && it.returnType == String::class.java
+        }
+        for (method in stringMethods) {
+            try {
+                val value = method.invoke(user) as? String
+                logDebug("  String method [${method.name}] = [$value]")
+            } catch (e: Exception) {
+                // Skip methods that error
+            }
+        }
+        logDebug("=== END DUMP ===")
+
+        // Try common field names for username - prioritize "username" and check for variations
+        val fieldOrder = listOf(
+            "username",
+            "userName",
+            "tag",  // Discord sometimes uses tag for username
+            "name",
+            "discriminator",
+            "globalName",
+            "displayName"
+        )
         for (fieldName in fieldOrder) {
             val fromField = runCatching {
                 val field = user.javaClass.declaredFields.firstOrNull { it.name == fieldName }
@@ -974,9 +989,13 @@ class KeyIntercept : Plugin() {
                 field.get(user)?.toString()?.trim().orEmpty()
             }.getOrDefault("")
 
-            if (fromField.isNotEmpty()) return fromField
+            if (fromField.isNotEmpty()) {
+                logDebug("Username resolved from field '$fieldName': '$fromField'")
+                return fromField
+            }
         }
 
+        logDebug("No username field found")
         return ""
     }
 
