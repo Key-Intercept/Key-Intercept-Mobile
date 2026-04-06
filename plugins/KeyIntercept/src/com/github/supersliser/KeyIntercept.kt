@@ -1042,9 +1042,29 @@ class KeyIntercept : Plugin() {
         if (channel == null) return fallbackName
 
         logger.warn("[KeyIntercept] [resolveDmRecipientName] Starting DM recipient resolution (fallback='$fallbackName')")
+        logger.warn("[KeyIntercept] [resolveDmRecipientName] Channel class: ${channel.javaClass.simpleName}")
+
+        // DUMP ALL FIELDS AND METHODS ON THE CHANNEL
+        logger.warn("[KeyIntercept] [resolveDmRecipientName] === CHANNEL OBJECT DUMP ===")
+        val allFields = channel.javaClass.declaredFields
+        logger.warn("[KeyIntercept] [resolveDmRecipientName] All fields (${allFields.size}):")
+        for (field in allFields) {
+            logger.warn("[KeyIntercept] [resolveDmRecipientName]   Field: ${field.name} (${field.type.simpleName})")
+        }
+
+        val allMethods = channel.javaClass.methods.filter { it.parameterCount == 0 }
+        logger.warn("[KeyIntercept] [resolveDmRecipientName] All zero-param methods (${allMethods.size}):")
+        for (method in allMethods.take(30)) {  // Limit to first 30 to avoid spam
+            logger.warn("[KeyIntercept] [resolveDmRecipientName]   Method: ${method.name}() -> ${method.returnType.simpleName}")
+        }
+        if (allMethods.size > 30) {
+            logger.warn("[KeyIntercept] [resolveDmRecipientName]   ... and ${allMethods.size - 30} more methods")
+        }
+        logger.warn("[KeyIntercept] [resolveDmRecipientName] === END DUMP ===")
 
         return runCatching {
             val currentUserId = resolveCurrentDiscordId()
+            logger.warn("[KeyIntercept] [resolveDmRecipientName] Current user ID: $currentUserId")
 
             val recipientIds = LinkedHashSet<Long>()
             val recipientMethodNames = listOf(
@@ -1062,10 +1082,14 @@ class KeyIntercept : Plugin() {
                     extractLongValues(method.invoke(channel))
                 }.getOrDefault(emptyList())
 
+                if (methodIds.isNotEmpty()) {
+                    logger.warn("[KeyIntercept] [resolveDmRecipientName] Found via method '$methodName': ${methodIds.size} IDs")
+                }
                 recipientIds.addAll(methodIds)
             }
 
             if (recipientIds.isEmpty()) {
+                logger.warn("[KeyIntercept] [resolveDmRecipientName] No recipient IDs from methods, trying fields...")
                 val fieldNames = listOf("recipientId", "recipientIds", "recipients")
                 for (fieldName in fieldNames) {
                     val fieldIds = runCatching {
@@ -1074,50 +1098,72 @@ class KeyIntercept : Plugin() {
                         field.isAccessible = true
                         extractLongValues(field.get(channel))
                     }.getOrDefault(emptyList())
+                    if (fieldIds.isNotEmpty()) {
+                        logger.warn("[KeyIntercept] [resolveDmRecipientName] Found via field '$fieldName': ${fieldIds.size} IDs")
+                    }
                     recipientIds.addAll(fieldIds)
                 }
             }
 
-            logDebug("DM recipient resolution: found ${recipientIds.size} recipient IDs")
+            logger.warn("[KeyIntercept] [resolveDmRecipientName] Total recipient IDs found: ${recipientIds.size}")
 
             if (currentUserId != null) {
                 recipientIds.remove(currentUserId)
+                logger.warn("[KeyIntercept] [resolveDmRecipientName] After removing current user: ${recipientIds.size} IDs remain")
             }
 
             if (recipientIds.isEmpty()) {
-                logDebug("DM recipient resolution: no valid recipient IDs after filtering")
+                logger.warn("[KeyIntercept] [resolveDmRecipientName] No valid recipient IDs after filtering, returning fallback")
                 return@runCatching fallbackName
             }
 
+            logger.warn("[KeyIntercept] [resolveDmRecipientName] Looking up users for IDs: $recipientIds")
             val usersStore = StoreStream.getUsers()
+            logger.warn("[KeyIntercept] [resolveDmRecipientName] Users store obtained: ${usersStore?.javaClass?.simpleName}")
+            
             val getUserMethod = usersStore.javaClass.methods.firstOrNull {
                 it.name == "getUser" && it.parameterCount == 1
             }
+            
+            logger.warn("[KeyIntercept] [resolveDmRecipientName] getUser method found: ${getUserMethod != null}")
+            if (getUserMethod != null) {
+                logger.warn("[KeyIntercept] [resolveDmRecipientName] getUser parameter type: ${getUserMethod.parameterTypes.firstOrNull()?.simpleName}")
+            }
 
             val recipientName = recipientIds.asSequence().mapNotNull { recipientId ->
+                logger.warn("[KeyIntercept] [resolveDmRecipientName] Fetching user for ID: $recipientId")
+                
                 val user = runCatching {
                     if (getUserMethod == null) {
+                        logger.warn("[KeyIntercept] [resolveDmRecipientName] getUserMethod is null!")
                         null
                     } else {
                         val paramType = getUserMethod.parameterTypes.firstOrNull()
-                        if (paramType == java.lang.Long.TYPE || paramType == java.lang.Long::class.java) {
+                        val result = if (paramType == java.lang.Long.TYPE || paramType == java.lang.Long::class.java) {
+                            logger.warn("[KeyIntercept] [resolveDmRecipientName] Invoking getUser with Long: $recipientId")
                             getUserMethod.invoke(usersStore, recipientId)
                         } else if (paramType == java.lang.Integer.TYPE || paramType == java.lang.Integer::class.java) {
+                            logger.warn("[KeyIntercept] [resolveDmRecipientName] Invoking getUser with Int: ${recipientId.toInt()}")
                             getUserMethod.invoke(usersStore, recipientId.toInt())
                         } else if (paramType == String::class.java) {
+                            logger.warn("[KeyIntercept] [resolveDmRecipientName] Invoking getUser with String: ${recipientId.toString()}")
                             getUserMethod.invoke(usersStore, recipientId.toString())
                         } else {
+                            logger.warn("[KeyIntercept] [resolveDmRecipientName] Unknown parameter type: ${paramType?.simpleName}")
                             null
                         }
+                        logger.warn("[KeyIntercept] [resolveDmRecipientName] User result: ${result?.javaClass?.simpleName} (null=${result == null})")
+                        result
                     }
                 }.getOrNull()
 
+                logger.warn("[KeyIntercept] [resolveDmRecipientName] User object obtained: ${user?.javaClass?.simpleName} (null=${user == null})")
                 val name = extractUserName(user)
-                logDebug("DM recipient name extraction: extracted '$name' from user object")
+                logger.warn("[KeyIntercept] [resolveDmRecipientName] Extracted name from user: '$name'")
                 name.takeIf { it.isNotEmpty() }
             }.firstOrNull()
 
-            logDebug("DM recipient resolution: resolved name='$recipientName' (fallback='$fallbackName')")
+            logger.warn("[KeyIntercept] [resolveDmRecipientName] Final resolved name: '$recipientName'")
             recipientName ?: fallbackName
         }.getOrDefault(fallbackName)
     }
