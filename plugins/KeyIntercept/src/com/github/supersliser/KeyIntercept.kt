@@ -946,15 +946,15 @@ class KeyIntercept : Plugin() {
     private fun extractUserName(user: Any?): String {
         if (user == null) return ""
 
-        logDebug("=== USER OBJECT DUMP ===")
-        logDebug("User class: ${user.javaClass.simpleName} (${user.javaClass.name})")
+        logger.warn("[KeyIntercept] === USER OBJECT DUMP ===")
+        logger.warn("[KeyIntercept] User class: ${user.javaClass.simpleName} (${user.javaClass.name})")
 
         // Dump all String fields for debugging
         val allStringFields = user.javaClass.declaredFields.filter { it.type == String::class.java }
         for (field in allStringFields) {
             field.isAccessible = true
             val value = field.get(user) as? String
-            logDebug("  String field [${field.name}] = [$value]")
+            logger.warn("[KeyIntercept]   String field [${field.name}] = [$value]")
         }
 
         // Also try methods that return String
@@ -964,12 +964,12 @@ class KeyIntercept : Plugin() {
         for (method in stringMethods) {
             try {
                 val value = method.invoke(user) as? String
-                logDebug("  String method [${method.name}] = [$value]")
+                logger.warn("[KeyIntercept]   String method [${method.name}] = [$value]")
             } catch (e: Exception) {
                 // Skip methods that error
             }
         }
-        logDebug("=== END DUMP ===")
+        logger.warn("[KeyIntercept] === END DUMP ===")
 
         // Try common field names for username - prioritize "username" and check for variations
         val fieldOrder = listOf(
@@ -990,12 +990,12 @@ class KeyIntercept : Plugin() {
             }.getOrDefault("")
 
             if (fromField.isNotEmpty()) {
-                logDebug("Username resolved from field '$fieldName': '$fromField'")
+                logger.warn("[KeyIntercept] Username resolved from field '$fieldName': '$fromField'")
                 return fromField
             }
         }
 
-        logDebug("No username field found")
+        logger.warn("[KeyIntercept] No username field found")
         return ""
     }
 
@@ -1040,6 +1040,8 @@ class KeyIntercept : Plugin() {
 
     private fun resolveDmRecipientName(channel: Any?, fallbackName: String): String {
         if (channel == null) return fallbackName
+
+        logger.warn("[KeyIntercept] [resolveDmRecipientName] Starting DM recipient resolution (fallback='$fallbackName')")
 
         return runCatching {
             val currentUserId = resolveCurrentDiscordId()
