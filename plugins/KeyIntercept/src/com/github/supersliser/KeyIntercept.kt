@@ -23,8 +23,8 @@ import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.TimeUnit
 import kotlin.math.floor
 import kotlin.random.Random
-import com.doist.normalize.Form
-import com.doist.normalize.normalize
+import doist.x.normalize.Form
+import doist.x.normalize.normalize
 
 @AliucordPlugin(requiresRestart = false)
 class KeyIntercept : Plugin() {
