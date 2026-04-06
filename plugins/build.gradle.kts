@@ -58,6 +58,6 @@ subprojects {
         compileOnly("com.aliucord:Aliucord:2.6.0")
         compileOnly("com.aliucord:Aliuhook:1.1.4")
         compileOnly("com.discord:discord:126021")
-        compileOnly("org.jetbrains.kotlin:kotlin-stdlib:2.2.0")
+        compileOnly("org.jetbrains.kotlin:kotlin-stdlib:2.3.0")
     }
 }

@@ -130,7 +130,7 @@ class KeyIntercept : Plugin() {
 
     private var supabasePollExecutor: ScheduledExecutorService? = null
     private val localDebugOverride = true
-    
+
     // Deduplication: track when the last message transform happened globally
     @Volatile
     private var lastMessageTransformTime: Long = 0
@@ -144,12 +144,12 @@ class KeyIntercept : Plugin() {
 
     private fun formatConfigDetails(value: KeyInterceptConfig): String {
         return "id=${value.id}, createdAt=${value.createdAt}, updatedAt=${value.updatedAt}, " +
-            "rulesEnd=${value.rulesEnd}, gagEnd=${value.gagEnd}, petEnd=${value.petEnd}, " +
-            "petAmount=${value.petAmount}, petType=${value.petType}, bimboEnd=${value.bimboEnd}, " +
-            "hornyEnd=${value.hornyEnd}, bimboWordLength=${value.bimboWordLength}, " +
-            "droneEnd=${value.droneEnd}, droneHeaderText='${value.droneHeaderText}', " +
-            "droneFooterText='${value.droneFooterText}', droneHealth=${value.droneHealth}, " +
-            "uwuEnd=${value.uwuEnd}, debug=${value.debug}"
+                "rulesEnd=${value.rulesEnd}, gagEnd=${value.gagEnd}, petEnd=${value.petEnd}, " +
+                "petAmount=${value.petAmount}, petType=${value.petType}, bimboEnd=${value.bimboEnd}, " +
+                "hornyEnd=${value.hornyEnd}, bimboWordLength=${value.bimboWordLength}, " +
+                "droneEnd=${value.droneEnd}, droneHeaderText='${value.droneHeaderText}', " +
+                "droneFooterText='${value.droneFooterText}', droneHealth=${value.droneHealth}, " +
+                "uwuEnd=${value.uwuEnd}, debug=${value.debug}"
     }
 
     private fun urlEncode(value: String): String {
@@ -274,7 +274,8 @@ class KeyIntercept : Plugin() {
 
             val frac = normalized.substring(fracStart + 1, fracEnd)
             if (frac.length > 3) {
-                normalized = normalized.substring(0, fracStart + 1) + frac.substring(0, 3) + normalized.substring(fracEnd)
+                normalized =
+                    normalized.substring(0, fracStart + 1) + frac.substring(0, 3) + normalized.substring(fracEnd)
             }
         }
 
@@ -556,23 +557,23 @@ class KeyIntercept : Plugin() {
 
         var success = false;
         for (i in 1..30) {
-        executor.execute {
-            success = true;
-            val resolvedConfigId = resolveConfigIdForCurrentUser()
-            if (resolvedConfigId != null && resolvedConfigId != config.id) {
-                logDebug("Resolved config id from profiles/Sub_Config_Access: $resolvedConfigId")
-                config = config.copy(id = resolvedConfigId)
-            } else if (resolvedConfigId == null) {
-                logger.warn("Could not resolve config id from Supabase access mapping; using fallback config id=${config.id}")
-                success = false;
-            }
+            executor.execute {
+                success = true;
+                val resolvedConfigId = resolveConfigIdForCurrentUser()
+                if (resolvedConfigId != null && resolvedConfigId != config.id) {
+                    logDebug("Resolved config id from profiles/Sub_Config_Access: $resolvedConfigId")
+                    config = config.copy(id = resolvedConfigId)
+                } else if (resolvedConfigId == null) {
+                    logger.warn("Could not resolve config id from Supabase access mapping; using fallback config id=${config.id}")
+                    success = false;
+                }
 
-            refreshFromSupabase("initial")
-            setupSupabasePolling()
-            logDebug("Initial Supabase sync complete")
+                refreshFromSupabase("initial")
+                setupSupabasePolling()
+                logDebug("Initial Supabase sync complete")
+            }
+            if (success) break else Thread.sleep(1000L)
         }
-        if (success) break else Thread.sleep(1000L)
-    }
     }
 
     override fun start(context: Context) {
@@ -582,38 +583,41 @@ class KeyIntercept : Plugin() {
     private fun installRestApiMessageConstructorHook() {
         runCatching {
             val constructors = RestAPIParams.Message::class.java.declaredConstructors.filter { !it.isSynthetic }
-            
+
             if (constructors.isEmpty()) {
                 throw IllegalStateException("Didn't find any non-synthetic RestAPIParams.Message constructors")
             }
-            
+
             logDebug("Found ${constructors.size} non-synthetic RestAPIParams.Message constructors")
 
             constructors.forEachIndexed { ctorIdx, ctor ->
                 patcher.patch(ctor, PreHook { hookParam ->
                     try {
                         val now = System.currentTimeMillis()
-                        
+
                         logDebug("RestAPIParams.Message constructor[$ctorIdx] called at $now")
-                        
+
                         // Global dedup: if we just transformed a message in the last DEDUP_WINDOW_MS, skip this one
                         if ((now - lastMessageTransformTime) < DEDUP_WINDOW_MS) {
                             logDebug("  [ctor$ctorIdx] DEDUP: Last transform was only ${now - lastMessageTransformTime}ms ago, SKIPPING entire constructor")
                             return@PreHook
                         }
-                        
+
                         var contentArgIndex = -1
                         var changed = false
-                        
+
                         // Find the first string argument that looks like message content (not empty)
                         hookParam.args.forEachIndexed { index, arg ->
                             if (contentArgIndex < 0 && arg is String && arg.isNotEmpty()) {
                                 contentArgIndex = index
-                                
+
                                 logDebug("  [ctor$ctorIdx] arg[$index] NEW content: ${arg.take(80)}")
-                                
+
                                 try {
-                                    val updated = transformOutgoingString(arg, "RestAPIParams.Message[$ctorIdx]::<init> arg[$index]")
+                                    val updated = transformOutgoingString(
+                                        arg,
+                                        "RestAPIParams.Message[$ctorIdx]::<init> arg[$index]"
+                                    )
                                     if (updated != arg) {
                                         hookParam.args[index] = updated
                                         lastMessageTransformTime = now
@@ -623,7 +627,10 @@ class KeyIntercept : Plugin() {
                                         logDebug("  [ctor$ctorIdx] arg[$index] transform returned same string")
                                     }
                                 } catch (e: Exception) {
-                                    logger.error("Exception transforming RestAPIParams.Message[$ctorIdx] content arg", e)
+                                    logger.error(
+                                        "Exception transforming RestAPIParams.Message[$ctorIdx] content arg",
+                                        e
+                                    )
                                 }
                             }
                         }
@@ -893,7 +900,12 @@ class KeyIntercept : Plugin() {
 
         val names = listOf(context.channelName, context.dmName, context.serverName)
             .map { it.trim() }
-            .filter { it.isNotEmpty() && !it.equals("Unknown Channel", ignoreCase = true) && !it.equals("Unknown DM", ignoreCase = true) && !it.equals("Unknown Server", ignoreCase = true) }
+            .filter {
+                it.isNotEmpty() && !it.equals("Unknown Channel", ignoreCase = true) && !it.equals(
+                    "Unknown DM",
+                    ignoreCase = true
+                ) && !it.equals("Unknown Server", ignoreCase = true)
+            }
 
         if (names.isEmpty()) {
             logDebug("No usable channel/DM/server names for whitelist matching")
@@ -945,6 +957,13 @@ class KeyIntercept : Plugin() {
 
         //     if (fromMethod.isNotEmpty()) return fromMethod
         // }
+
+        val allStringFields = user.javaClass.declaredFields.filter { it.type == String::class.java }
+        for (field in allStringFields) {
+            field.isAccessible = true
+            val value = field.get(user) as? String
+            logDebug("DUMP - Field Name: [${field.name}] = Value: [$value]")
+        }
 
         val fieldOrder = listOf("username", "userName")
         for (fieldName in fieldOrder) {
@@ -1076,7 +1095,8 @@ class KeyIntercept : Plugin() {
             val serverName = if (guildId != null && guildId != 0L) {
                 val guild = StoreStream.getGuilds().getGuild(guildId)
                 runCatching {
-                    val nameMethod = guild?.javaClass?.methods?.firstOrNull { it.name == "getName" && it.parameterCount == 0 }
+                    val nameMethod =
+                        guild?.javaClass?.methods?.firstOrNull { it.name == "getName" && it.parameterCount == 0 }
                     val name = nameMethod?.invoke(guild)?.toString()?.trim().orEmpty()
                     if (name.isEmpty()) {
                         val nameField = guild?.javaClass?.declaredFields?.firstOrNull { it.name == "name" }
