@@ -971,7 +971,23 @@ class KeyIntercept : Plugin() {
         }
         logger.warn("[KeyIntercept] === END DUMP ===")
 
-        // Try common field names for username - prioritize "username" and check for variations
+        // Prefer username-like methods before display/global name methods.
+        val methodOrder = listOf("getUsername", "getUserName", "username", "getTag", "getName")
+        for (methodName in methodOrder) {
+            val fromMethod = runCatching {
+                val method = user.javaClass.methods.firstOrNull {
+                    it.name == methodName && it.parameterCount == 0
+                } ?: return@runCatching ""
+                method.invoke(user)?.toString()?.trim().orEmpty()
+            }.getOrDefault("")
+
+            if (fromMethod.isNotEmpty()) {
+                logger.warn("[KeyIntercept] Username resolved from method '$methodName': '$fromMethod'")
+                return fromMethod
+            }
+        }
+
+        // Try common field names for username - prioritize "username" and check for variations.
         val fieldOrder = listOf(
             "username",
             "userName",
@@ -997,6 +1013,97 @@ class KeyIntercept : Plugin() {
 
         logger.warn("[KeyIntercept] No username field found")
         return ""
+    }
+
+    private fun getChannelMemberObject(channel: Any?): Any? {
+        if (channel == null) return null
+
+        val viaMethod = runCatching {
+            val method = channel.javaClass.methods.firstOrNull {
+                (it.name == "getMember" || it.name == "member") && it.parameterCount == 0
+            } ?: return@runCatching null
+            method.invoke(channel)
+        }.getOrNull()
+
+        if (viaMethod != null) return viaMethod
+
+        val viaField = runCatching {
+            val field = channel.javaClass.declaredFields.firstOrNull {
+                it.name.equals("member", ignoreCase = true)
+            } ?: return@runCatching null
+            field.isAccessible = true
+            field.get(channel)
+        }.getOrNull()
+
+        return viaField
+    }
+
+    private fun extractRecipientIdsFromMember(channel: Any?): List<Long> {
+        val member = getChannelMemberObject(channel) ?: return emptyList()
+
+        val out = LinkedHashSet<Long>()
+        val memberMethodNames = listOf("getUserId", "getMemberId", "getId", "userId", "id")
+        for (methodName in memberMethodNames) {
+            val ids = runCatching {
+                val method = member.javaClass.methods.firstOrNull {
+                    it.name == methodName && it.parameterCount == 0
+                } ?: return@runCatching emptyList<Long>()
+                extractLongValues(method.invoke(member))
+            }.getOrDefault(emptyList())
+            out.addAll(ids)
+        }
+
+        val memberFieldNames = listOf("userId", "memberId", "id")
+        for (fieldName in memberFieldNames) {
+            val ids = runCatching {
+                val field = member.javaClass.declaredFields.firstOrNull { it.name == fieldName }
+                    ?: return@runCatching emptyList<Long>()
+                field.isAccessible = true
+                extractLongValues(field.get(member))
+            }.getOrDefault(emptyList())
+            out.addAll(ids)
+        }
+
+        return out.toList()
+    }
+
+    private fun resolveUserNameFromMember(channel: Any?): String {
+        val member = getChannelMemberObject(channel) ?: return ""
+
+        // First try direct username-ish methods/fields on the ThreadMember.
+        val methodCandidates = listOf("getUsername", "getUserName", "getName", "getNick")
+        for (methodName in methodCandidates) {
+            val name = runCatching {
+                val method = member.javaClass.methods.firstOrNull {
+                    it.name == methodName && it.parameterCount == 0
+                } ?: return@runCatching ""
+                method.invoke(member)?.toString()?.trim().orEmpty()
+            }.getOrDefault("")
+
+            if (name.isNotEmpty()) return name
+        }
+
+        val fieldCandidates = listOf("username", "userName", "name", "nick")
+        for (fieldName in fieldCandidates) {
+            val name = runCatching {
+                val field = member.javaClass.declaredFields.firstOrNull { it.name == fieldName }
+                    ?: return@runCatching ""
+                field.isAccessible = true
+                field.get(member)?.toString()?.trim().orEmpty()
+            }.getOrDefault("")
+
+            if (name.isNotEmpty()) return name
+        }
+
+        // If member can return a nested user object, use the normal user-name extraction path.
+        val nestedUser = runCatching {
+            val method = member.javaClass.methods.firstOrNull {
+                (it.name == "getUser" || it.name == "user") && it.parameterCount == 0
+            } ?: return@runCatching null
+            method.invoke(member)
+        }.getOrNull()
+
+        return extractUserName(nestedUser)
     }
 
     private fun hasRecipientIds(channel: Any?): Boolean {
@@ -1032,6 +1139,10 @@ class KeyIntercept : Plugin() {
                 }.getOrDefault(false)
 
                 if (hasField) return@runCatching true
+            }
+
+            if (extractRecipientIdsFromMember(channel).isNotEmpty()) {
+                return@runCatching true
             }
 
             false
@@ -1105,6 +1216,14 @@ class KeyIntercept : Plugin() {
                 }
             }
 
+            if (recipientIds.isEmpty()) {
+                val memberIds = extractRecipientIdsFromMember(channel)
+                if (memberIds.isNotEmpty()) {
+                    logger.warn("[KeyIntercept] [resolveDmRecipientName] Found via member ThreadMember: ${memberIds.size} IDs")
+                    recipientIds.addAll(memberIds)
+                }
+            }
+
             logger.warn("[KeyIntercept] [resolveDmRecipientName] Total recipient IDs found: ${recipientIds.size}")
 
             if (currentUserId != null) {
@@ -1113,6 +1232,11 @@ class KeyIntercept : Plugin() {
             }
 
             if (recipientIds.isEmpty()) {
+                val memberName = resolveUserNameFromMember(channel)
+                if (memberName.isNotEmpty()) {
+                    logger.warn("[KeyIntercept] [resolveDmRecipientName] Resolved username directly from member object: '$memberName'")
+                    return@runCatching memberName
+                }
                 logger.warn("[KeyIntercept] [resolveDmRecipientName] No valid recipient IDs after filtering, returning fallback")
                 return@runCatching fallbackName
             }
