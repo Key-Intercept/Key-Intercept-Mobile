@@ -17,6 +17,28 @@ class DiscordContextResolver(private val resolver: DiscordResolver) {
             // Resolve the current selected channel ID
             channelId = resolver.resolveSelectedChannelId() ?: -1L
             println("[KeyIntercept][Whitelist] Selected channel id=$channelId")
+
+            // Fallback: try to infer channel/server from previously sent message if selection failed
+            if (channelId <= 0) {
+                val prev = runCatching { resolver.getPreviouslySentMessage() }.getOrNull()
+                if (prev != null) {
+                    val maybeChan = runCatching { resolver.invokeMethodIfExists(prev, listOf("getChannelId", "getChannel", "channelId")) }.getOrNull()
+                    val chanFromPrev = runCatching { resolver.extractLongValues(maybeChan).firstOrNull() }.getOrNull() ?: -1L
+                    if (chanFromPrev > 0) {
+                        channelId = chanFromPrev
+                        println("[KeyIntercept][Whitelist] Inferred channel id from previous message: $channelId")
+                    }
+
+                    val maybeGuild = runCatching { resolver.invokeMethodIfExists(prev, listOf("getGuildId", "guildId", "getGuild")) }.getOrNull()
+                    val guildFromPrev = runCatching { resolver.extractLongValues(maybeGuild).firstOrNull() }.getOrNull() ?: -1L
+                    if (guildFromPrev > 0) {
+                        serverId = guildFromPrev
+                        println("[KeyIntercept][Whitelist] Inferred guild id from previous message: $serverId")
+                    }
+                } else {
+                    println("[KeyIntercept][Whitelist] No previous message available to infer channel/guild")
+                }
+            }
             
             if (channelId > 0) {
                 // Try to get the channel object and extract its name and guild
@@ -33,7 +55,7 @@ class DiscordContextResolver(private val resolver: DiscordResolver) {
                     println("[KeyIntercept] Failed to resolve channel details for ID $channelId: ${e.message}")
                 }
                 
-                // Try to get server/guild name if we have the guild ID
+                // Try to get server/guild name if we have the guild ID (will also run later if inferred)
                 if (serverId > 0) {
                     try {
                         val guildObj = getGuildObject(serverId)
@@ -46,6 +68,21 @@ class DiscordContextResolver(private val resolver: DiscordResolver) {
                     } catch (e: Exception) {
                         println("[KeyIntercept] Failed to resolve guild details for ID $serverId: ${e.message}")
                     }
+                }
+            }
+
+            // If we still don't have a server name but we have a serverId (inferred earlier), try to fetch guild name
+            if (serverName.isEmpty() && serverId > 0) {
+                try {
+                    val guildObj = getGuildObject(serverId)
+                    if (guildObj != null) {
+                        serverName = extractStringValue(guildObj, listOf("name", "getName")) ?: ""
+                        println("[KeyIntercept][Whitelist] (Fallback) Guild object=${guildObj.javaClass.name} serverName='$serverName'")
+                    } else {
+                        println("[KeyIntercept][Whitelist] (Fallback) Could not resolve guild object for id=$serverId")
+                    }
+                } catch (e: Exception) {
+                    println("[KeyIntercept] (Fallback) Failed to resolve guild details for ID $serverId: ${e.message}")
                 }
             }
 
