@@ -1,12 +1,17 @@
 package com.github.supersliser.supabase
 
-import okhttp3.OkHttpClient
-import okhttp3.Request
-import okhttp3.Response
-import okhttp3.WebSocket
-import okhttp3.WebSocketListener
+import io.ktor.client.HttpClient
+import io.ktor.client.engine.okhttp.OkHttp
+import io.ktor.client.plugins.websocket.WebSockets
+import io.ktor.client.plugins.websocket.webSocket
+import io.ktor.http.HttpMethod
+import io.ktor.websocket.Frame
+import io.ktor.websocket.WebSocketSession
+import io.ktor.websocket.readText
+import kotlinx.coroutines.runBlocking
 import org.json.JSONArray
 import org.json.JSONObject
+import java.net.URI
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.ScheduledFuture
@@ -21,13 +26,15 @@ class SupabaseRealtimeClient {
         val onChange: () -> Unit
     )
 
-    private val client = OkHttpClient.Builder().build()
+    private val client = HttpClient(OkHttp) {
+        install(WebSockets)
+    }
     private val heartbeatExecutor: ScheduledExecutorService = Executors.newSingleThreadScheduledExecutor()
     private val reconnectExecutor: ScheduledExecutorService = Executors.newSingleThreadScheduledExecutor()
     private val refCounter = AtomicInteger(1)
 
     @Volatile
-    private var socket: WebSocket? = null
+    private var session: WebSocketSession? = null
 
     @Volatile
     private var closedByUser = false
@@ -47,42 +54,58 @@ class SupabaseRealtimeClient {
         this.closedByUser = false
 
         val wsUrl = buildWebSocketUrl()
-        val request = Request.Builder().url(wsUrl).build()
+        val uri = URI(wsUrl)
 
-        socket = client.newWebSocket(request, object : WebSocketListener() {
-            override fun onOpen(webSocket: WebSocket, response: Response) {
-                joinAllChannels(webSocket, subscriptions)
-                startHeartbeat()
-                onConnected?.invoke()
-            }
+        runCatching {
+            runBlocking {
+                client.webSocket(
+                    method = HttpMethod.Get,
+                    host = uri.host,
+                    port = if (uri.port == -1) 443 else uri.port,
+                    path = uri.rawPath,
+                    request = {
+                        uri.rawQuery?.takeIf { it.isNotEmpty() }?.split('&')?.forEach { pair ->
+                            val idx = pair.indexOf('=')
+                            if (idx > 0) {
+                                parameter(pair.substring(0, idx), pair.substring(idx + 1))
+                            }
+                        }
+                    }
+                ) {
+                    session = this
+                    joinAllChannels(this, subscriptions)
+                    startHeartbeat(this)
+                    onConnected?.invoke()
 
-            override fun onMessage(webSocket: WebSocket, text: String) {
-                handleMessage(text)
-            }
-
-            override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                onError?.invoke(t)
-                scheduleReconnect(onConnected, onError)
-            }
-
-            override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-                if (!closedByUser) {
-                    scheduleReconnect(onConnected, onError)
+                    try {
+                        for (frame in incoming) {
+                            when (frame) {
+                                is Frame.Text -> handleMessage(frame.readText())
+                                else -> Unit
+                            }
+                        }
+                    } finally {
+                        session = null
+                        runCatching { heartbeatFuture?.cancel(true) }
+                        heartbeatFuture = null
+                    }
                 }
             }
-        })
+        }.onFailure { error ->
+            onError?.invoke(error)
+            scheduleReconnect(onConnected, onError)
+        }
     }
 
     fun close() {
         closedByUser = true
-        runCatching { socket?.close(1000, "Plugin stopped") }
-        socket = null
+        runCatching { session?.close() }
+        session = null
         runCatching { heartbeatFuture?.cancel(true) }
         heartbeatFuture = null
         runCatching { heartbeatExecutor.shutdownNow() }
         runCatching { reconnectExecutor.shutdownNow() }
-        runCatching { client.dispatcher.executorService.shutdown() }
-        runCatching { client.connectionPool.evictAll() }
+        runCatching { client.close() }
     }
 
     private fun buildWebSocketUrl(): String {
@@ -90,7 +113,7 @@ class SupabaseRealtimeClient {
         return "wss://$base/realtime/v1/websocket?apikey=${SupabaseClient.SUPABASE_KEY}&vsn=1.0.0"
     }
 
-    private fun joinAllChannels(webSocket: WebSocket, subscriptions: List<RealtimeSubscription>) {
+    private fun joinAllChannels(session: WebSocketSession, subscriptions: List<RealtimeSubscription>) {
         subscriptions.forEach { sub ->
             val topic = topicForChannel(sub.channel)
             val payload = JSONObject()
@@ -111,20 +134,19 @@ class SupabaseRealtimeClient {
                 .put("payload", payload)
                 .put("ref", nextRef())
 
-            webSocket.send(joinMsg.toString())
+            session.outgoing.trySend(Frame.Text(joinMsg.toString()))
         }
     }
 
-    private fun startHeartbeat() {
+    private fun startHeartbeat(session: WebSocketSession) {
         heartbeatFuture?.cancel(true)
         heartbeatFuture = heartbeatExecutor.scheduleAtFixedRate({
-            val ws = socket ?: return@scheduleAtFixedRate
             val heartbeat = JSONObject()
                 .put("topic", "phoenix")
                 .put("event", "heartbeat")
                 .put("payload", JSONObject())
                 .put("ref", nextRef())
-            ws.send(heartbeat.toString())
+            session.outgoing.trySend(Frame.Text(heartbeat.toString()))
         }, 30L, 30L, TimeUnit.SECONDS)
     }
 
