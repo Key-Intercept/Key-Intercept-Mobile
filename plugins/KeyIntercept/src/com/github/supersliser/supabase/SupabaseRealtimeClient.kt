@@ -5,6 +5,7 @@ import io.ktor.client.engine.okhttp.OkHttp
 import io.ktor.client.plugins.websocket.WebSockets
 import io.ktor.client.plugins.websocket.webSocket
 import io.ktor.http.HttpMethod
+import io.ktor.http.URLBuilder
 import io.ktor.websocket.Frame
 import io.ktor.websocket.WebSocketSession
 import io.ktor.websocket.readText
@@ -64,10 +65,12 @@ class SupabaseRealtimeClient {
                     port = if (uri.port == -1) 443 else uri.port,
                     path = uri.rawPath,
                     request = {
-                        uri.rawQuery?.takeIf { it.isNotEmpty() }?.split('&')?.forEach { pair ->
-                            val idx = pair.indexOf('=')
-                            if (idx > 0) {
-                                parameter(pair.substring(0, idx), pair.substring(idx + 1))
+                        url {
+                            uri.rawQuery?.takeIf { it.isNotEmpty() }?.split('&')?.forEach { pair ->
+                                val idx = pair.indexOf('=')
+                                if (idx > 0) {
+                                    parameters.append(pair.substring(0, idx), pair.substring(idx + 1))
+                                }
                             }
                         }
                     }
@@ -81,7 +84,6 @@ class SupabaseRealtimeClient {
                         for (frame in incoming) {
                             when (frame) {
                                 is Frame.Text -> handleMessage(frame.readText())
-                                else -> Unit
                             }
                         }
                     } finally {
@@ -99,13 +101,11 @@ class SupabaseRealtimeClient {
 
     fun close() {
         closedByUser = true
-        runCatching { session?.close() }
         session = null
         runCatching { heartbeatFuture?.cancel(true) }
         heartbeatFuture = null
         runCatching { heartbeatExecutor.shutdownNow() }
         runCatching { reconnectExecutor.shutdownNow() }
-        runCatching { client.close() }
     }
 
     private fun buildWebSocketUrl(): String {
