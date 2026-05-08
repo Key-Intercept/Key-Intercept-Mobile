@@ -139,21 +139,16 @@ class DiscordContextResolver(private val resolver: DiscordResolver) {
             return false
         }
 
-        // Build list of names and IDs to check
-        val names = listOf(context.channelName, context.dmName, context.serverName)
-            .map { it.trim() }
-            .filter { it.isNotEmpty() }
-        val ids = listOf(context.channelId, context.dmId, context.serverId)
-            .filter { it > 0 }
+        val serverName = context.serverName.trim()
+        val serverId = context.serverId
 
-        if (names.isEmpty() && ids.isEmpty()) {
-            if (debug) println("[KeyIntercept] No usable channel/DM/server names or IDs for whitelist matching")
+        if (serverName.isEmpty() && serverId <= 0) {
+            if (debug) println("[KeyIntercept] No usable server name or server ID for whitelist matching")
             return false
         }
 
         if (debug) {
-            println("[KeyIntercept][Whitelist] Checking context channel='${context.channelName}' dm='${context.dmName}' server='${context.serverName}'")
-            println("[KeyIntercept][Whitelist] Context ids channel=${context.channelId} dm=${context.dmId} server=${context.serverId}")
+            println("[KeyIntercept][Whitelist] Checking server name='$serverName' server id=$serverId")
             println("[KeyIntercept][Whitelist] Comparing against ${whitelist.size} whitelist entries")
             if (whitelist.isEmpty()) {
                 println("[KeyIntercept][Whitelist] Whitelist is empty; transforms will be skipped")
@@ -163,25 +158,20 @@ class DiscordContextResolver(private val resolver: DiscordResolver) {
             }
         }
 
-        // Check both names and IDs against whitelist
+        // Check server name or server ID against whitelist
         val matched = whitelist.any { item ->
-            // Match by name
-            val nameMatch = names.any { candidate ->
-                val matches = item.serverName.equals(candidate, ignoreCase = true)
-                if (debug) println("[KeyIntercept][Whitelist] name compare candidate='$candidate' entry='${item.serverName}' => $matches")
-                matches
+            val normalizedEntryName = item.serverName.trim()
+            val nameMatch = serverName.isNotEmpty() && normalizedEntryName.isNotEmpty() &&
+                normalizedEntryName.equals(serverName, ignoreCase = true)
+            val idMatch = serverId > 0 && item.discordId > 0 && item.discordId == serverId
+
+            if (debug) {
+                println("[KeyIntercept][Whitelist] compare entry name='${item.serverName}' id=${item.discordId} => nameMatch=$nameMatch idMatch=$idMatch")
             }
-            // Match by ID for servers and DMs
-            val idMatch = ids.any { candidate ->
-                val matches = item.discordId == candidate
-                if (debug) println("[KeyIntercept][Whitelist] id compare candidate=$candidate entry=${item.discordId} => $matches")
-                matches
-            }
-            nameMatch ||
-            // Match by ID for servers and DMs
-            idMatch
+
+            nameMatch || idMatch
         }
-        if (debug) println("[KeyIntercept] Whitelist names=$names ids=$ids matched=$matched")
+        if (debug) println("[KeyIntercept] Whitelist serverName='$serverName' serverId=$serverId matched=$matched")
         return matched
     }
 }
