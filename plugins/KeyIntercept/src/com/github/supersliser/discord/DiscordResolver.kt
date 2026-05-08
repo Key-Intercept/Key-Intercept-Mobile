@@ -96,7 +96,7 @@ class DiscordResolver(private val supabaseClient: SupabaseClient) {
         }.getOrDefault(false)
     }
 
-    private fun resolveSelectedChannelId(): Long? {
+    fun resolveSelectedChannelId(): Long? {
         return runCatching {
             val selected = runCatching {
                 StoreStream::class.java.getMethod("getChannelsSelected").invoke(null)
@@ -289,7 +289,7 @@ class DiscordResolver(private val supabaseClient: SupabaseClient) {
         return null
     }
 
-    private fun invokeMethodIfExists(target: Any, names: List<String>, vararg args: Any?): Any? {
+    fun invokeMethodIfExists(target: Any, names: List<String>, vararg args: Any?): Any? {
         for (name in names) {
             val methods = target.javaClass.methods.filter { it.name == name && it.parameterCount == args.size }
             for (method in methods) {
@@ -300,7 +300,7 @@ class DiscordResolver(private val supabaseClient: SupabaseClient) {
         return null
     }
 
-    private fun readFieldIfExists(target: Any, names: List<String>): Any? {
+    fun readFieldIfExists(target: Any, names: List<String>): Any? {
         for (name in names) {
             val value = runCatching {
                 val field = target.javaClass.getDeclaredField(name)

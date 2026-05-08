@@ -14,8 +14,33 @@ class DiscordContextResolver(private val resolver: DiscordResolver) {
             var serverName = ""
             var serverId = -1L
 
-            // Attempt to resolve via Discord stores (simplified version)
-            // Full implementation would need reflection into Discord internals
+            // Resolve the current selected channel ID
+            channelId = resolver.resolveSelectedChannelId() ?: -1L
+            
+            if (channelId > 0) {
+                // Try to get the channel object and extract its name and guild
+                try {
+                    val channelObj = getChannelObject(channelId)
+                    if (channelObj != null) {
+                        channelName = extractStringValue(channelObj, listOf("name", "getName", "getChannelName")) ?: ""
+                        serverId = extractLongValues(extractValue(channelObj, listOf("guild", "getGuild", "guildId", "getGuildId"))).firstOrNull() ?: -1L
+                    }
+                } catch (e: Exception) {
+                    println("[KeyIntercept] Failed to resolve channel details for ID $channelId: ${e.message}")
+                }
+                
+                // Try to get server/guild name if we have the guild ID
+                if (serverId > 0) {
+                    try {
+                        val guildObj = getGuildObject(serverId)
+                        if (guildObj != null) {
+                            serverName = extractStringValue(guildObj, listOf("name", "getName")) ?: ""
+                        }
+                    } catch (e: Exception) {
+                        println("[KeyIntercept] Failed to resolve guild details for ID $serverId: ${e.message}")
+                    }
+                }
+            }
 
             ConversationContext(
                 channelName = channelName,
@@ -28,6 +53,66 @@ class DiscordContextResolver(private val resolver: DiscordResolver) {
         }.onFailure {
             println("[KeyIntercept] Failed to resolve current conversation context: ${it.message}")
         }.getOrNull()
+    }
+
+    private fun getChannelObject(channelId: Long): Any? {
+        return runCatching {
+            val channelsStore = com.discord.stores.StoreStream::class.java
+                .getMethod("getChannels")
+                .invoke(null) ?: return@runCatching null
+            
+            val methodNames = listOf("getChannel", "get")
+            for (methodName in methodNames) {
+                val method = runCatching {
+                    channelsStore.javaClass.getMethod(methodName, Long::class.javaPrimitiveType)
+                }.getOrNull() ?: continue
+                
+                val result = runCatching { method.invoke(channelsStore, channelId) }.getOrNull()
+                if (result != null) return@runCatching result
+            }
+            
+            null
+        }.getOrNull()
+    }
+
+    private fun getGuildObject(guildId: Long): Any? {
+        return runCatching {
+            val guildsStore = com.discord.stores.StoreStream::class.java
+                .getMethod("getGuilds")
+                .invoke(null) ?: return@runCatching null
+            
+            val methodNames = listOf("getGuild", "get")
+            for (methodName in methodNames) {
+                val method = runCatching {
+                    guildsStore.javaClass.getMethod(methodName, Long::class.javaPrimitiveType)
+                }.getOrNull() ?: continue
+                
+                val result = runCatching { method.invoke(guildsStore, guildId) }.getOrNull()
+                if (result != null) return@runCatching result
+            }
+            
+            null
+        }.getOrNull()
+    }
+
+    private fun extractValue(obj: Any?, methodNames: List<String>): Any? {
+        if (obj == null) return null
+        
+        for (methodName in methodNames) {
+            val method = runCatching {
+                obj.javaClass.getMethod(methodName)
+            }.getOrNull() ?: continue
+            
+            val result = runCatching { method.invoke(obj) }.getOrNull()
+            if (result != null) return result
+        }
+        
+        return null
+    }
+
+    private fun extractStringValue(obj: Any?, methodNames: List<String>): String? {
+        val value = extractValue(obj, methodNames) ?: return null
+        return value.toString().takeIf { it.isNotEmpty() }
     }
 
     fun shouldTransformForCurrentConversation(
