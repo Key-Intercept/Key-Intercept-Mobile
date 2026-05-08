@@ -84,6 +84,7 @@ class SupabaseRealtimeClient {
                         for (frame in incoming) {
                             when (frame) {
                                 is Frame.Text -> handleMessage(frame.readText())
+                                else -> Unit
                             }
                         }
                     } finally {
