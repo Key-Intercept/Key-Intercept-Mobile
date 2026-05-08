@@ -245,9 +245,16 @@ class KeyIntercept : Plugin() {
             val fetcher = dataFetcher ?: return@runCatching
 
             val fetchedWhitelist = fetcher.fetchWhitelistFromSupabase(config.id)
+            logDebug("Whitelist fetch completed: ${fetchedWhitelist.size} items ($reason)")
+            if (fetchedWhitelist.isNotEmpty()) {
+                val preview = fetchedWhitelist.take(5).joinToString { "${it.serverName}:${it.discordId}" }
+                logDebug("Whitelist preview (first ${minOf(5, fetchedWhitelist.size)}): $preview")
+            }
             if (fetchedWhitelist.isNotEmpty()) {
                 whitelist = fetchedWhitelist
                 logDebug("Whitelist refreshed: ${fetchedWhitelist.size} items ($reason)")
+            } else {
+                logDebug("Whitelist refresh returned empty set; keeping previous whitelist of size ${whitelist.size}")
             }
         }.onFailure {
             logger.error("Whitelist refresh failed ($reason)", it)
@@ -373,7 +380,12 @@ class KeyIntercept : Plugin() {
         if (input.isEmpty()) return input
 
         val context = contextResolver?.resolveCurrentConversationContext()
+        logDebug(
+            "Transform gate context: channel='${context?.channelName.orEmpty()}' channelId=${context?.channelId ?: -1} " +
+                    "server='${context?.serverName.orEmpty()}' serverId=${context?.serverId ?: -1} whitelistSize=${whitelist.size}"
+        )
         val shouldTransform = contextResolver?.shouldTransformForCurrentConversation(context, whitelist, config.debug) == true
+        logDebug("Transform gate decision for first argument: shouldTransform=$shouldTransform")
         
         if (!shouldTransform) {
             logDebug("Skipping transforms for current conversation")
