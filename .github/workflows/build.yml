@@ -35,6 +35,13 @@ jobs:
 
       - name: Push Builds
         run: |
+          GITHUB_REF_NAME="${{ github.ref_name }}"
+          if [ "${GITHUB_REF_NAME}" = "main" ]; then
+            BUILD_BRANCH=builds
+          else
+            BUILD_BRANCH="${GITHUB_REF_NAME}-builds"
+          fi
+
           mkdir builds
           mv plugins/*/build/outputs/*.zip build/outputs/updater.json builds
           cd builds
@@ -44,8 +51,8 @@ jobs:
           git config --local user.name "github-actions[bot]"
 
           git remote add origin "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}"
-          git fetch --depth 1 --filter=blob:none origin builds || false && git reset FETCH_HEAD
+          git fetch --depth 1 --filter=blob:none origin "${BUILD_BRANCH}" || false && git reset FETCH_HEAD
 
           git add -- .
           git commit -m "Build $GITHUB_SHA" || exit 0
-          git push origin HEAD:builds
+          git push origin HEAD:"${BUILD_BRANCH}"
