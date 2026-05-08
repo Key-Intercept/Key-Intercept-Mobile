@@ -4,6 +4,7 @@ import com.github.supersliser.models.Rule
 import com.github.supersliser.models.KeyInterceptConfig
 import com.github.supersliser.models.DroneConfig
 import com.github.supersliser.models.PetWord
+import com.github.supersliser.models.CensoredWord
 import com.github.supersliser.models.ServerWhitelistItem
 import com.github.supersliser.utils.readFloat
 import com.github.supersliser.utils.readInt
@@ -146,6 +147,27 @@ class SupabaseDataFetcher(private val client: SupabaseClient) {
             out
         }.onFailure {
             println("[KeyIntercept] Failed to fetch pet words from Supabase: ${it.message}")
+        }.getOrDefault(emptyList())
+    }
+
+    fun fetchCensoredWordsFromSupabase(configId: Long): List<CensoredWord> {
+        return runCatching {
+            val body = client.supabaseGet("Censored_Words", mapOf("config_id" to configId.toString()))
+            val arr = JSONArray(body)
+            val out = ArrayList<CensoredWord>(arr.length())
+            for (i in 0 until arr.length()) {
+                val obj = arr.getJSONObject(i)
+                out.add(
+                    CensoredWord(
+                        id = obj.readLong("id"),
+                        configId = obj.readLong("config_id"),
+                        word = obj.readString("word")
+                    )
+                )
+            }
+            out
+        }.onFailure {
+            println("[KeyIntercept] Failed to fetch censored words from Supabase: ${it.message}")
         }.getOrDefault(emptyList())
     }
 }

@@ -3,16 +3,20 @@ package com.github.supersliser.transforms
 import com.github.supersliser.models.KeyInterceptConfig
 import com.github.supersliser.models.DroneConfig
 import com.github.supersliser.models.Rule
+import com.github.supersliser.models.CensoredWord
 import com.github.supersliser.discord.DiscordResolver
+import com.github.supersliser.transforms.CensoredTransform
 
 class TransformEngine(
     private val config: KeyInterceptConfig,
     private val droneConfig: DroneConfig,
     private val rules: List<Rule>,
+    private val censoredWords: List<CensoredWord>,
     private val discordResolver: DiscordResolver?
 ) {
 
     private val rulesTransform = RulesTransform(rules)
+    private val censoredTransform = CensoredTransform(config, censoredWords)
     private val gagTransform = GagTransform()
     private val petTransform = PetTransform(config)
     private val bimboTransform = BimboTransform()
@@ -23,6 +27,7 @@ class TransformEngine(
     fun applyAllTransforms(content: String): String {
         var modified = content
         modified = rulesTransform.apply(modified)
+        modified = censoredTransform.apply(modified)
         modified = uwuTransform.apply(modified)
         modified = hornyTransform.apply(modified)
         modified = petTransform.apply(modified)
@@ -34,10 +39,15 @@ class TransformEngine(
 
     fun updateConfig(newConfig: KeyInterceptConfig) {
         petTransform.updateConfig(newConfig)
+        censoredTransform.updateConfig(newConfig)
     }
 
     fun updateDroneConfig(newDroneConfig: DroneConfig) {
         droneTransform.updateConfig(newDroneConfig)
+    }
+
+    fun updateCensoredWords(newWords: List<CensoredWord>) {
+        censoredTransform.updateWords(newWords)
     }
 
     fun updateRules(newRules: List<Rule>) {
