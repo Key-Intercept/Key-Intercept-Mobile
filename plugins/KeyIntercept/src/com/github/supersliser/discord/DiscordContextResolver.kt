@@ -23,7 +23,7 @@ class DiscordContextResolver(private val resolver: DiscordResolver) {
                     val channelObj = getChannelObject(channelId)
                     if (channelObj != null) {
                         channelName = extractStringValue(channelObj, listOf("name", "getName", "getChannelName")) ?: ""
-                        serverId = extractLongValues(extractValue(channelObj, listOf("guild", "getGuild", "guildId", "getGuildId"))).firstOrNull() ?: -1L
+                        serverId = resolver.extractLongValues(extractValue(channelObj, listOf("guild", "getGuild", "guildId", "getGuildId"))).firstOrNull() ?: -1L
                     }
                 } catch (e: Exception) {
                     println("[KeyIntercept] Failed to resolve channel details for ID $channelId: ${e.message}")
