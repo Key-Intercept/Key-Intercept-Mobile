@@ -7,6 +7,7 @@ import com.discord.restapi.RestAPIParams
 import com.github.supersliser.discord.DiscordContextResolver
 import com.github.supersliser.discord.DiscordResolver
 import com.github.supersliser.models.KeyInterceptConfig
+import com.github.supersliser.models.DroneConfig
 import com.github.supersliser.models.Rule
 import com.github.supersliser.models.ServerWhitelistItem
 import com.github.supersliser.models.PetWord
@@ -33,12 +34,20 @@ class KeyIntercept : Plugin() {
             bimboEnd = 0,
             hornyEnd = 0,
             bimboWordLength = 5,
-            droneEnd = 0,
-            droneHeaderText = "Drone Header",
-            droneFooterText = "Drone Footer",
-            droneHealth = 0.75f,
             uwuEnd = 0,
             debug = true
+        )
+        private var droneConfig: DroneConfig = DroneConfig(
+            config_id = -1,
+            speech_header = "Beep boop, I am a drone. Bzzt.",
+            speech_footer = "Bzzt, drone out.",
+            drone_health = 100f,
+            action_header = "Drone performs an action: ",
+            action_footer = "End of drone action.",
+            whisper_header = "Drone whispers: ",
+            whisper_footer = "End of drone whisper.",
+            loud_header = "Drone loudly announces: ",
+            loud_footer = "End of drone announcement."
         )
 
         private var rules: List<Rule> = emptyList()
@@ -70,9 +79,15 @@ class KeyIntercept : Plugin() {
                 "rulesEnd=${value.rulesEnd}, gagEnd=${value.gagEnd}, petEnd=${value.petEnd}, " +
                 "petAmount=${value.petAmount}, petType=${value.petType}, bimboEnd=${value.bimboEnd}, " +
                 "hornyEnd=${value.hornyEnd}, bimboWordLength=${value.bimboWordLength}, " +
-                "droneEnd=${value.droneEnd}, droneHeaderText='${value.droneHeaderText}', " +
-                "droneFooterText='${value.droneFooterText}', droneHealth=${value.droneHealth}, " +
                 "uwuEnd=${value.uwuEnd}, debug=${value.debug}"
+    }
+
+    private fun formatDroneConfigDetails(value: DroneConfig): String {
+        return "config_id=${value.config_id}, drone_health=${value.drone_health}, " +
+                "speech_header='${value.speech_header}', speech_footer='${value.speech_footer}', " +
+                "action_header='${value.action_header}', action_footer='${value.action_footer}', " +
+                "whisper_header='${value.whisper_header}', whisper_footer='${value.whisper_footer}', " +
+                "loud_header='${value.loud_header}', loud_footer='${value.loud_footer}'"
     }
 
     private fun setupSupabasePolling() {
@@ -97,6 +112,12 @@ class KeyIntercept : Plugin() {
                 config = it
                 transformEngine?.updateConfig(it)
                 logDebug("Config refreshed from Supabase ($reason)")
+            }
+
+            fetcher.fetchDroneConfigFromSupabase(config.id)?.let {
+                droneConfig = it
+                transformEngine?.updateDroneConfig(it)
+                logDebug("Drone config refreshed from Supabase ($reason)")
             }
 
             val fetchedRules = fetcher.fetchRulesFromSupabase(config.id)
@@ -125,6 +146,7 @@ class KeyIntercept : Plugin() {
     override fun load(context: Context) {
         logger.info("KeyIntercept loaded")
         logDebug("Initial config: ${formatConfigDetails(config)}")
+        logDebug("Initial drone config: ${formatDroneConfigDetails(droneConfig)}")
         logDebug("Initial data sizes: rules=${rules.size}, whitelist=${whitelist.map { it.serverName }}, petWords=${petWords.size}")
 
         supabasePollExecutor?.shutdownNow()
@@ -134,7 +156,7 @@ class KeyIntercept : Plugin() {
         dataFetcher = SupabaseDataFetcher(supabaseClient!!)
         discordResolver = DiscordResolver(supabaseClient!!)
         contextResolver = DiscordContextResolver(discordResolver!!)
-        transformEngine = TransformEngine(config, rules)
+        transformEngine = TransformEngine(config, droneConfig, rules, discordResolver)
 
         val executor = supabasePollExecutor
         if (executor == null) {

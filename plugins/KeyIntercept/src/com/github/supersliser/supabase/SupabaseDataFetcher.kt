@@ -2,6 +2,7 @@ package com.github.supersliser.supabase
 
 import com.github.supersliser.models.Rule
 import com.github.supersliser.models.KeyInterceptConfig
+import com.github.supersliser.models.DroneConfig
 import com.github.supersliser.models.PetWord
 import com.github.supersliser.models.ServerWhitelistItem
 import com.github.supersliser.utils.readFloat
@@ -36,10 +37,6 @@ class SupabaseDataFetcher(private val client: SupabaseClient) {
                     bimboEnd = obj.readLong("bimbo_end"),
                     hornyEnd = obj.readLong("horny_end"),
                     bimboWordLength = obj.readInt("bimbo_word_length"),
-                    droneEnd = obj.readLong("drone_end"),
-                    droneHeaderText = obj.readString("drone_header_text"),
-                    droneFooterText = obj.readString("drone_footer_text"),
-                    droneHealth = obj.readFloat("drone_health"),
                     uwuEnd = obj.readLong("uwu_end"),
                     debug = obj.readBoolean("debug")
                 )
@@ -47,6 +44,40 @@ class SupabaseDataFetcher(private val client: SupabaseClient) {
         }.onFailure {
             println("[KeyIntercept] Failed to fetch config from Supabase: ${it.message}")
         }.getOrNull()
+    }
+
+    fun fetchDroneConfigFromSupabase(configId: Long): DroneConfig? {
+        val endpoints = listOf("Drone_Config", "DroneConfig")
+
+        for (endpoint in endpoints) {
+            val value = runCatching {
+                val body = client.supabaseGet(endpoint, mapOf("config_id" to configId.toString()))
+                val arr = JSONArray(body)
+                if (arr.length() == 0) {
+                    null
+                } else {
+                    val obj = arr.getJSONObject(0)
+                    DroneConfig(
+                        config_id = obj.readLong("config_id", configId),
+                        speech_header = obj.readString("speech_header", "Beep boop, I am a drone. Bzzt."),
+                        speech_footer = obj.readString("speech_footer", "Bzzt, drone out."),
+                        drone_health = obj.readFloat("drone_health", 1f),
+                        action_header = obj.readString("action_header", "Drone performs an action:"),
+                        action_footer = obj.readString("action_footer", "End of drone action."),
+                        whisper_header = obj.readString("whisper_header", "Drone whispers:"),
+                        whisper_footer = obj.readString("whisper_footer", "End of drone whisper."),
+                        loud_header = obj.readString("loud_header", "Drone loudly announces:"),
+                        loud_footer = obj.readString("loud_footer", "End of drone announcement.")
+                    )
+                }
+            }.onFailure {
+                println("[KeyIntercept] Failed to fetch drone config from $endpoint: ${it.message}")
+            }.getOrNull()
+
+            if (value != null) return value
+        }
+
+        return null
     }
 
     fun fetchRulesFromSupabase(configId: Long): List<Rule> {

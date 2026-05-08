@@ -3,9 +3,326 @@ package com.github.supersliser.discord
 import com.discord.stores.StoreStream
 import com.github.supersliser.supabase.SupabaseClient
 import org.json.JSONArray
+import org.json.JSONObject
 import kotlin.math.floor
 
 class DiscordResolver(private val supabaseClient: SupabaseClient) {
+
+    fun getPreviouslySentMessage(channelIdOverride: Long? = null): Any? {
+        return runCatching {
+            val channelId = channelIdOverride ?: resolveSelectedChannelId() ?: return@runCatching null
+            val messagesStore = runCatching {
+                StoreStream::class.java.getMethod("getMessages").invoke(null)
+            }.getOrNull() ?: return@runCatching null
+
+            val messageContainer = invokeMethodIfExists(messagesStore, listOf("getMessages"), channelId)
+                ?: invokeMethodIfExists(messagesStore, listOf("getMessageList", "get", "getForChannel"), channelId)
+                ?: return@runCatching null
+
+            extractLatestMessageFromContainer(messageContainer)
+        }.onFailure {
+            println("[KeyIntercept] Failed to resolve previously sent message: ${it.message}")
+        }.getOrNull()
+    }
+
+    fun getAuthorOfPreviouslySentMessage(channelIdOverride: Long? = null): Any? {
+        val previous = getPreviouslySentMessage(channelIdOverride) ?: return null
+
+        val fromMethod = invokeMethodIfExists(previous, listOf("getAuthor", "author", "getUser"))
+        if (fromMethod != null) return fromMethod
+
+        val fromField = readFieldIfExists(previous, listOf("author", "user", "messageAuthor"))
+        if (fromField != null) return fromField
+
+        return null
+    }
+
+    fun getPreviouslySentMessageContent(channelIdOverride: Long? = null): String? {
+        val previous = getPreviouslySentMessage(channelIdOverride) ?: return null
+
+        val fromMethod = invokeMethodIfExists(previous, listOf("getContent", "content", "getMessage"))
+        val methodContent = fromMethod?.toString()?.trim().orEmpty()
+        if (methodContent.isNotEmpty()) return methodContent
+
+        val fromField = readFieldIfExists(previous, listOf("content", "message", "body"))
+        val fieldContent = fromField?.toString()?.trim().orEmpty()
+        if (fieldContent.isNotEmpty()) return fieldContent
+
+        return null
+    }
+
+    fun getAuthorNameOfPreviouslySentMessage(channelIdOverride: Long? = null): String? {
+        val author = getAuthorOfPreviouslySentMessage(channelIdOverride) ?: return null
+        val username = extractUsernameOnly(author).trim()
+        return username.ifEmpty { null }
+    }
+
+    fun editPreviousMessage(newContent: String, channelIdOverride: Long? = null): Boolean {
+        val previous = getPreviouslySentMessage(channelIdOverride) ?: return false
+        val messageId = extractMessageId(previous) ?: return false
+        return editMessageById(messageId, newContent, channelIdOverride)
+    }
+
+    fun editMessageById(messageId: Long, newContent: String, channelIdOverride: Long? = null): Boolean {
+        return runCatching {
+            val channelId = channelIdOverride ?: resolveSelectedChannelId() ?: return@runCatching false
+            val restApi = resolveRestApiInstance() ?: return@runCatching false
+            val payload = buildRestApiMessagePayload(newContent)
+
+            val methodNames = listOf(
+                "editMessage",
+                "editChannelMessage",
+                "patchChannelMessage",
+                "updateMessage"
+            )
+
+            for (methodName in methodNames) {
+                val methods = restApi.javaClass.methods.filter { it.name == methodName }
+                for (method in methods) {
+                    val args = buildArgsForMethod(method.parameterTypes, channelId, messageId, payload, newContent)
+                        ?: continue
+                    runCatching {
+                        method.invoke(restApi, *args)
+                        return@runCatching true
+                    }.onSuccess {
+                        return@runCatching true
+                    }
+                }
+            }
+
+            false
+        }.onFailure {
+            println("[KeyIntercept] Failed to edit message id=$messageId: ${it.message}")
+        }.getOrDefault(false)
+    }
+
+    private fun resolveSelectedChannelId(): Long? {
+        return runCatching {
+            val selected = runCatching {
+                StoreStream::class.java.getMethod("getChannelsSelected").invoke(null)
+            }.getOrNull() ?: return@runCatching null
+
+            val fromMethod = invokeMethodIfExists(
+                selected,
+                listOf("getId", "getChannelId", "getSelectedChannelId", "id", "channelId")
+            )
+            val methodId = extractLongValues(fromMethod).firstOrNull()
+            if (methodId != null && methodId > 0L) return@runCatching methodId
+
+            val fromField = readFieldIfExists(
+                selected,
+                listOf("id", "channelId", "selectedChannelId", "selected_channel_id")
+            )
+            val fieldId = extractLongValues(fromField).firstOrNull()
+            if (fieldId != null && fieldId > 0L) return@runCatching fieldId
+
+            null
+        }.getOrNull()
+    }
+
+    private fun extractLatestMessageFromContainer(container: Any?): Any? {
+        if (container == null) return null
+
+        val directMethod = invokeMethodIfExists(
+            container,
+            listOf("getLatestMessage", "getNewestMessage", "latest", "peek", "last")
+        )
+        if (directMethod != null) return directMethod
+
+        val valuesMethod = invokeMethodIfExists(container, listOf("getMessages", "values", "toList", "all"))
+        val sequence = toIterable(valuesMethod ?: container)
+        if (sequence.isNotEmpty()) {
+            return sequence
+                .mapNotNull { item ->
+                    val id = extractMessageId(item)
+                    if (id == null || id <= 0L) null else id to item
+                }
+                .maxByOrNull { it.first }
+                ?.second
+        }
+
+        return null
+    }
+
+    private fun resolveRestApiInstance(): Any? {
+        val classNames = listOf(
+            "com.discord.restapi.RestAPI",
+            "com.discord.utilities.rest.RestAPI"
+        )
+
+        for (className in classNames) {
+            val clazz = runCatching { Class.forName(className) }.getOrNull() ?: continue
+
+            val staticGetters = listOf("getApi", "api", "getInstance", "instance")
+            for (getter in staticGetters) {
+                val value = runCatching {
+                    val method = clazz.methods.firstOrNull { it.name == getter && it.parameterCount == 0 }
+                    method?.invoke(null)
+                }.getOrNull()
+                if (value != null) return value
+            }
+
+            val staticFields = listOf("api", "INSTANCE", "instance")
+            for (fieldName in staticFields) {
+                val value = runCatching {
+                    val field = clazz.getDeclaredField(fieldName)
+                    field.isAccessible = true
+                    field.get(null)
+                }.getOrNull()
+                if (value != null) return value
+            }
+
+            val companion = runCatching {
+                val companionField = clazz.getDeclaredField("Companion")
+                companionField.isAccessible = true
+                companionField.get(null)
+            }.getOrNull()
+
+            if (companion != null) {
+                for (getter in staticGetters) {
+                    val value = runCatching {
+                        val method = companion.javaClass.methods.firstOrNull { it.name == getter && it.parameterCount == 0 }
+                        method?.invoke(companion)
+                    }.getOrNull()
+                    if (value != null) return value
+                }
+            }
+        }
+
+        return null
+    }
+
+    private fun buildRestApiMessagePayload(content: String): Any {
+        val payloadJson = JSONObject().put("content", content)
+        val constructors = com.discord.restapi.RestAPIParams.Message::class.java.declaredConstructors
+
+        for (ctor in constructors) {
+            val args = Array<Any?>(ctor.parameterCount) { idx ->
+                val type = ctor.parameterTypes[idx]
+                when {
+                    JSONObject::class.java.isAssignableFrom(type) -> payloadJson
+                    type == String::class.java -> null
+                    type == java.lang.Boolean.TYPE || type == java.lang.Boolean::class.java -> false
+                    type == java.lang.Integer.TYPE || type == java.lang.Integer::class.java -> 0
+                    type == java.lang.Long.TYPE || type == java.lang.Long::class.java -> 0L
+                    type == java.lang.Double.TYPE || type == java.lang.Double::class.java -> 0.0
+                    type == java.lang.Float.TYPE || type == java.lang.Float::class.java -> 0f
+                    else -> null
+                }
+            }
+
+            val hasJsonParam = ctor.parameterTypes.any { JSONObject::class.java.isAssignableFrom(it) }
+            if (!hasJsonParam) continue
+
+            runCatching {
+                ctor.isAccessible = true
+                return ctor.newInstance(*args)
+            }
+        }
+
+        return payloadJson
+    }
+
+    private fun buildArgsForMethod(
+        parameterTypes: Array<Class<*>>,
+        channelId: Long,
+        messageId: Long,
+        payload: Any,
+        newContent: String
+    ): Array<Any?>? {
+        val args = Array<Any?>(parameterTypes.size) { null }
+        var usedChannel = false
+        var usedMessage = false
+        var usedPayload = false
+
+        for (i in parameterTypes.indices) {
+            val type = parameterTypes[i]
+            when {
+                (type == java.lang.Long.TYPE || type == java.lang.Long::class.java) && !usedChannel -> {
+                    args[i] = channelId
+                    usedChannel = true
+                }
+
+                (type == java.lang.Long.TYPE || type == java.lang.Long::class.java) && !usedMessage -> {
+                    args[i] = messageId
+                    usedMessage = true
+                }
+
+                type.isAssignableFrom(payload.javaClass) && !usedPayload -> {
+                    args[i] = payload
+                    usedPayload = true
+                }
+
+                JSONObject::class.java.isAssignableFrom(type) && !usedPayload -> {
+                    args[i] = JSONObject().put("content", newContent)
+                    usedPayload = true
+                }
+
+                type == String::class.java && !usedPayload -> {
+                    args[i] = newContent
+                    usedPayload = true
+                }
+
+                type == java.lang.Boolean.TYPE || type == java.lang.Boolean::class.java -> args[i] = false
+                type == java.lang.Integer.TYPE || type == java.lang.Integer::class.java -> args[i] = 0
+                type == java.lang.Double.TYPE || type == java.lang.Double::class.java -> args[i] = 0.0
+                type == java.lang.Float.TYPE || type == java.lang.Float::class.java -> args[i] = 0f
+                else -> args[i] = null
+            }
+        }
+
+        if (!usedChannel || !usedMessage || !usedPayload) return null
+        return args
+    }
+
+    private fun extractMessageId(message: Any?): Long? {
+        if (message == null) return null
+
+        val fromMethod = invokeMethodIfExists(message, listOf("getId", "id", "getMessageId", "messageId"))
+        val methodId = extractLongValues(fromMethod).firstOrNull()
+        if (methodId != null && methodId > 0L) return methodId
+
+        val fromField = readFieldIfExists(message, listOf("id", "messageId", "message_id"))
+        val fieldId = extractLongValues(fromField).firstOrNull()
+        if (fieldId != null && fieldId > 0L) return fieldId
+
+        return null
+    }
+
+    private fun invokeMethodIfExists(target: Any, names: List<String>, vararg args: Any?): Any? {
+        for (name in names) {
+            val methods = target.javaClass.methods.filter { it.name == name && it.parameterCount == args.size }
+            for (method in methods) {
+                val result = runCatching { method.invoke(target, *args) }.getOrNull()
+                if (result != null) return result
+            }
+        }
+        return null
+    }
+
+    private fun readFieldIfExists(target: Any, names: List<String>): Any? {
+        for (name in names) {
+            val value = runCatching {
+                val field = target.javaClass.getDeclaredField(name)
+                field.isAccessible = true
+                field.get(target)
+            }.getOrNull()
+
+            if (value != null) return value
+        }
+        return null
+    }
+
+    private fun toIterable(value: Any?): List<Any?> {
+        if (value == null) return emptyList()
+
+        return when (value) {
+            is Iterable<*> -> value.toList()
+            is Array<*> -> value.toList()
+            is Map<*, *> -> value.values.toList()
+            else -> emptyList()
+        }
+    }
 
     fun resolveCurrentDiscordId(): Long? {
         return runCatching {

@@ -1,7 +1,5 @@
 package com.github.supersliser.models
 
-import java.util.Date
-
 data class KeyInterceptConfig(
     val id: Long = 0,
     val createdAt: Long = 0,
@@ -14,10 +12,6 @@ data class KeyInterceptConfig(
     val bimboEnd: Long = 0,
     val hornyEnd: Long = 0,
     val bimboWordLength: Int = 0,
-    val droneEnd: Long = 0,
-    val droneHeaderText: String = "",
-    val droneFooterText: String = "",
-    val droneHealth: Float = 0f,
     val uwuEnd: Long = 0,
     val debug: Boolean = false
 )
