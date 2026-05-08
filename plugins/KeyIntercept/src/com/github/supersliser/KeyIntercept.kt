@@ -329,19 +329,27 @@ class KeyIntercept : Plugin() {
                             
                             // Deduplication: skip if we just transformed a message
                             if ((now - lastMessageTransformTime) < DEDUP_WINDOW_MS) {
+                                logDebug("Skipping transform due to dedup window")
                                 return@PreHook
                             }
 
                             var changed = false
                             hookParam.args.forEachIndexed { index, arg ->
                                 if (arg is String && arg.isNotEmpty()) {
+                                    logDebug("Transforming argument $index: ${arg.take(50)}...")
                                     val transformed = transformMessage(arg)
                                     if (transformed != arg) {
+                                        logDebug("Transform changed message (length: ${arg.length} -> ${transformed.length})")
                                         hookParam.args[index] = transformed
                                         lastMessageTransformTime = now
                                         changed = true
+                                    } else {
+                                        logDebug("Transform did not change message")
                                     }
                                 }
+                            }
+                            if (!changed) {
+                                logDebug("No string arguments were transformed in this message")
                             }
                         } catch (e: Exception) {
                             logger.error("Error in message transform hook", e)

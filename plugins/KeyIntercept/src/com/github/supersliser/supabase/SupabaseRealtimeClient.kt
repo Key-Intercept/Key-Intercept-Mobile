@@ -54,51 +54,54 @@ class SupabaseRealtimeClient {
         this.subscriptions = subscriptions
         this.closedByUser = false
 
-        val wsUrl = buildWebSocketUrl()
-        val uri = URI(wsUrl)
+        // Launch connection on a dedicated thread to avoid blocking the executor
+        Thread {
+            val wsUrl = buildWebSocketUrl()
+            val uri = URI(wsUrl)
 
-        runCatching {
-            runBlocking {
-                client.webSocket(
-                    method = HttpMethod.Get,
-                    host = uri.host,
-                    port = if (uri.port == -1) 443 else uri.port,
-                    path = uri.rawPath,
-                    request = {
-                        url {
-                            uri.rawQuery?.takeIf { it.isNotEmpty() }?.split('&')?.forEach { pair ->
-                                val idx = pair.indexOf('=')
-                                if (idx > 0) {
-                                    parameters.append(pair.substring(0, idx), pair.substring(idx + 1))
+            runCatching {
+                runBlocking {
+                    client.webSocket(
+                        method = HttpMethod.Get,
+                        host = uri.host,
+                        port = if (uri.port == -1) 443 else uri.port,
+                        path = uri.rawPath,
+                        request = {
+                            url {
+                                uri.rawQuery?.takeIf { it.isNotEmpty() }?.split('&')?.forEach { pair ->
+                                    val idx = pair.indexOf('=')
+                                    if (idx > 0) {
+                                        parameters.append(pair.substring(0, idx), pair.substring(idx + 1))
+                                    }
                                 }
                             }
                         }
-                    }
-                ) {
-                    session = this
-                    joinAllChannels(this, subscriptions)
-                    startHeartbeat(this)
-                    onConnected?.invoke()
+                    ) {
+                        session = this
+                        joinAllChannels(this, subscriptions)
+                        startHeartbeat(this)
+                        onConnected?.invoke()
 
-                    try {
-                        for (frame in incoming) {
-                            when (frame) {
-                                is Frame.Text -> handleMessage(frame.readText())
-                                else -> {
+                        try {
+                            for (frame in incoming) {
+                                when (frame) {
+                                    is Frame.Text -> handleMessage(frame.readText())
+                                    else -> {
+                                    }
                                 }
                             }
+                        } finally {
+                            session = null
+                            runCatching { heartbeatFuture?.cancel(true) }
+                            heartbeatFuture = null
                         }
-                    } finally {
-                        session = null
-                        runCatching { heartbeatFuture?.cancel(true) }
-                        heartbeatFuture = null
                     }
                 }
+            }.onFailure { error ->
+                onError?.invoke(error)
+                scheduleReconnect(onConnected, onError)
             }
-        }.onFailure { error ->
-            onError?.invoke(error)
-            scheduleReconnect(onConnected, onError)
-        }
+        }.start()
     }
 
     fun close() {
