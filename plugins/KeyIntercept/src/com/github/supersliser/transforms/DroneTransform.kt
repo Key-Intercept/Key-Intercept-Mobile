@@ -2,10 +2,14 @@ package com.github.supersliser.transforms
 
 import com.github.supersliser.discord.DiscordResolver
 import com.github.supersliser.models.DroneConfig
+import com.github.supersliser.models.KeyInterceptConfig
 import com.github.supersliser.utils.wordIsLink
 import kotlin.random.Random
 
-class DroneTransform(private var config: DroneConfig) {
+class DroneTransform(
+    private var config: DroneConfig,
+    private var keyConfig: KeyInterceptConfig
+) {
 
     private enum class DroneMode {
         SPEECH,
@@ -20,6 +24,11 @@ class DroneTransform(private var config: DroneConfig) {
     )
 
     fun apply(content: String, discordResolver: DiscordResolver?): String {
+        val now = System.currentTimeMillis()
+        if (keyConfig.droneEnd <= now) {
+            return content
+        }
+
         if (config.drone_health < 0.1f) {
             return "`This Drone haaaaas receieved bzzzzt, ppplease provide repaiirs using beep '/repair', tthank youu. Returned Error: 0x7547372482`"
         }
@@ -212,5 +221,9 @@ class DroneTransform(private var config: DroneConfig) {
 
     fun updateConfig(newConfig: DroneConfig) {
         config = newConfig
+    }
+
+    fun updateKeyConfig(newKeyConfig: KeyInterceptConfig) {
+        keyConfig = newKeyConfig
     }
 }

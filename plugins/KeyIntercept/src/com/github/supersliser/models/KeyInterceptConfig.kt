@@ -6,6 +6,7 @@ data class KeyInterceptConfig(
     val updatedAt: Long = 0,
     val rulesEnd: Long = 0,
     val gagEnd: Long = 0,
+    val droneEnd: Long = 0,
     val petEnd: Long = 0,
     val petAmount: Float = 0f,
     val petType: Long = 0,

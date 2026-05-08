@@ -21,7 +21,7 @@ class TransformEngine(
     private val petTransform = PetTransform(config)
     private val bimboTransform = BimboTransform()
     private val hornyTransform = HornyTransform()
-    private val droneTransform = DroneTransform(droneConfig)
+    private val droneTransform = DroneTransform(droneConfig, config)
     private val uwuTransform = UwuTransform()
 
     fun applyAllTransforms(content: String): String {
@@ -40,6 +40,7 @@ class TransformEngine(
     fun updateConfig(newConfig: KeyInterceptConfig) {
         petTransform.updateConfig(newConfig)
         censoredTransform.updateConfig(newConfig)
+        droneTransform.updateKeyConfig(newConfig)
     }
 
     fun updateDroneConfig(newDroneConfig: DroneConfig) {

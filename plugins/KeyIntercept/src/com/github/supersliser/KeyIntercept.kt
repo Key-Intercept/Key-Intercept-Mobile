@@ -28,6 +28,7 @@ class KeyIntercept : Plugin() {
             updatedAt = Date().time,
             rulesEnd = 0,
             gagEnd = 0,
+            droneEnd = 0,
             petEnd = 0,
             petAmount = 0f,
             petType = 0,
@@ -78,7 +79,7 @@ class KeyIntercept : Plugin() {
 
     private fun formatConfigDetails(value: KeyInterceptConfig): String {
         return "id=${value.id}, createdAt=${value.createdAt}, updatedAt=${value.updatedAt}, " +
-                "rulesEnd=${value.rulesEnd}, gagEnd=${value.gagEnd}, petEnd=${value.petEnd}, " +
+                "rulesEnd=${value.rulesEnd}, gagEnd=${value.gagEnd}, droneEnd=${value.droneEnd}, petEnd=${value.petEnd}, " +
                 "petAmount=${value.petAmount}, petType=${value.petType}, bimboEnd=${value.bimboEnd}, " +
                 "hornyEnd=${value.hornyEnd}, bimboWordLength=${value.bimboWordLength}, " +
                 "uwuEnd=${value.uwuEnd}, censoredEnd=${value.censoredEnd}, debug=${value.debug}"

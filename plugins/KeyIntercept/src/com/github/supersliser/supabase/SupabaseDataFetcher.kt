@@ -32,6 +32,7 @@ class SupabaseDataFetcher(private val client: SupabaseClient) {
                     updatedAt = obj.readTimestampMillis("updated_at"),
                     rulesEnd = obj.readLong("rules_end"),
                     gagEnd = obj.readLong("gag_end"),
+                    droneEnd = obj.readLong("drone_end"),
                     petEnd = obj.readLong("pet_end"),
                     petAmount = obj.readFloat("pet_amount"),
                     petType = obj.readLong("pet_type"),
