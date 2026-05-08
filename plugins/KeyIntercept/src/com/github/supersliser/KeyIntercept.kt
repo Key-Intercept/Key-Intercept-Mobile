@@ -334,22 +334,24 @@ class KeyIntercept : Plugin() {
                             }
 
                             var changed = false
-                            hookParam.args.forEachIndexed { index, arg ->
-                                if (arg is String && arg.isNotEmpty()) {
-                                    logDebug("Transforming argument $index: ${arg.take(50)}...")
-                                    val transformed = transformMessage(arg)
-                                    if (transformed != arg) {
-                                        logDebug("Transform changed message (length: ${arg.length} -> ${transformed.length})")
-                                        hookParam.args[index] = transformed
-                                        lastMessageTransformTime = now
-                                        changed = true
-                                    } else {
-                                        logDebug("Transform did not change message")
-                                    }
+                            val firstStringIndex = hookParam.args.indexOfFirst { it is String && it.isNotEmpty() }
+                            if (firstStringIndex >= 0) {
+                                val arg = hookParam.args[firstStringIndex] as String
+                                logDebug("Transforming first string argument $firstStringIndex: ${arg.take(50)}...")
+                                val transformed = transformMessage(arg)
+                                if (transformed != arg) {
+                                    logDebug("Transform changed first argument (length: ${arg.length} -> ${transformed.length})")
+                                    hookParam.args[firstStringIndex] = transformed
+                                    lastMessageTransformTime = now
+                                    changed = true
+                                } else {
+                                    logDebug("Transform did not change first argument")
                                 }
+                            } else {
+                                logDebug("No string argument found to transform")
                             }
                             if (!changed) {
-                                logDebug("No string arguments were transformed in this message")
+                                logDebug("Message completed with no content mutation")
                             }
                         } catch (e: Exception) {
                             logger.error("Error in message transform hook", e)

@@ -16,6 +16,7 @@ class DiscordContextResolver(private val resolver: DiscordResolver) {
 
             // Resolve the current selected channel ID
             channelId = resolver.resolveSelectedChannelId() ?: -1L
+            println("[KeyIntercept][Whitelist] Selected channel id=$channelId")
             
             if (channelId > 0) {
                 // Try to get the channel object and extract its name and guild
@@ -24,6 +25,9 @@ class DiscordContextResolver(private val resolver: DiscordResolver) {
                     if (channelObj != null) {
                         channelName = extractStringValue(channelObj, listOf("name", "getName", "getChannelName")) ?: ""
                         serverId = resolver.extractLongValues(extractValue(channelObj, listOf("guild", "getGuild", "guildId", "getGuildId"))).firstOrNull() ?: -1L
+                        println("[KeyIntercept][Whitelist] Channel object=${channelObj.javaClass.name} channelName='$channelName' serverId=$serverId")
+                    } else {
+                        println("[KeyIntercept][Whitelist] Could not resolve channel object for id=$channelId")
                     }
                 } catch (e: Exception) {
                     println("[KeyIntercept] Failed to resolve channel details for ID $channelId: ${e.message}")
@@ -35,6 +39,9 @@ class DiscordContextResolver(private val resolver: DiscordResolver) {
                         val guildObj = getGuildObject(serverId)
                         if (guildObj != null) {
                             serverName = extractStringValue(guildObj, listOf("name", "getName")) ?: ""
+                            println("[KeyIntercept][Whitelist] Guild object=${guildObj.javaClass.name} serverName='$serverName'")
+                        } else {
+                            println("[KeyIntercept][Whitelist] Could not resolve guild object for id=$serverId")
                         }
                     } catch (e: Exception) {
                         println("[KeyIntercept] Failed to resolve guild details for ID $serverId: ${e.message}")
@@ -144,12 +151,35 @@ class DiscordContextResolver(private val resolver: DiscordResolver) {
             return false
         }
 
+        if (debug) {
+            println("[KeyIntercept][Whitelist] Checking context channel='${context.channelName}' dm='${context.dmName}' server='${context.serverName}'")
+            println("[KeyIntercept][Whitelist] Context ids channel=${context.channelId} dm=${context.dmId} server=${context.serverId}")
+            println("[KeyIntercept][Whitelist] Comparing against ${whitelist.size} whitelist entries")
+            if (whitelist.isEmpty()) {
+                println("[KeyIntercept][Whitelist] Whitelist is empty; transforms will be skipped")
+            }
+            whitelist.forEachIndexed { index, item ->
+                println("[KeyIntercept][Whitelist] Entry #$index discordId=${item.discordId} serverName='${item.serverName}'")
+            }
+        }
+
         // Check both names and IDs against whitelist
         val matched = whitelist.any { item ->
             // Match by name
-            (names.any { item.serverName.equals(it, ignoreCase = true) }) ||
+            val nameMatch = names.any { candidate ->
+                val matches = item.serverName.equals(candidate, ignoreCase = true)
+                if (debug) println("[KeyIntercept][Whitelist] name compare candidate='$candidate' entry='${item.serverName}' => $matches")
+                matches
+            }
             // Match by ID for servers and DMs
-            (ids.any { item.discordId == it })
+            val idMatch = ids.any { candidate ->
+                val matches = item.discordId == candidate
+                if (debug) println("[KeyIntercept][Whitelist] id compare candidate=$candidate entry=${item.discordId} => $matches")
+                matches
+            }
+            nameMatch ||
+            // Match by ID for servers and DMs
+            idMatch
         }
         if (debug) println("[KeyIntercept] Whitelist names=$names ids=$ids matched=$matched")
         return matched
