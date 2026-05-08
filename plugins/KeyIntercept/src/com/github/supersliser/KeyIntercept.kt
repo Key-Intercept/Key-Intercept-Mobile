@@ -81,7 +81,7 @@ class KeyIntercept : Plugin() {
                 "rulesEnd=${value.rulesEnd}, gagEnd=${value.gagEnd}, petEnd=${value.petEnd}, " +
                 "petAmount=${value.petAmount}, petType=${value.petType}, bimboEnd=${value.bimboEnd}, " +
                 "hornyEnd=${value.hornyEnd}, bimboWordLength=${value.bimboWordLength}, " +
-                "uwuEnd=${value.uwuEnd}, debug=${value.debug}"
+                "uwuEnd=${value.uwuEnd}, censoredEnd=${value.censoredEnd}, debug=${value.debug}"
     }
 
     private fun formatDroneConfigDetails(value: DroneConfig): String {
@@ -282,7 +282,7 @@ class KeyIntercept : Plugin() {
         dataFetcher = SupabaseDataFetcher(supabaseClient!!)
         discordResolver = DiscordResolver(supabaseClient!!)
         contextResolver = DiscordContextResolver(discordResolver!!)
-        transformEngine = TransformEngine(config, droneConfig, rules, discordResolver)
+        transformEngine = TransformEngine(config, droneConfig, rules, censoredWords, discordResolver)
 
         val executor = supabaseExecutor
         if (executor == null) {

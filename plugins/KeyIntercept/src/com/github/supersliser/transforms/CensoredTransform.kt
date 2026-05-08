@@ -17,7 +17,8 @@ class CensoredTransform(
         for (cw in censoredWords) {
             val word = cw.word.trim()
             if (word.isEmpty()) continue
-            val pattern = Regex("(?i)\\b" + Regex.escape(word) + "\\b")
+            val escaped = Regex.escape(word)
+            val pattern = Regex("(?i)\\b$escaped\\b")
             val mask = "*".repeat(word.length)
             out = out.replace(pattern, mask)
         }

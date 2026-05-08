@@ -5,11 +5,3 @@ data class CensoredWord(
     val configId: Long = 0,
     val word: String = ""
 )
-package com.github.supersliser.models
-
-data class CensoredWord(
-    val id: Long = 0,
-    val configId: Long = 0,
-    val word: String = "",
-    val replacement: String = ""
-)

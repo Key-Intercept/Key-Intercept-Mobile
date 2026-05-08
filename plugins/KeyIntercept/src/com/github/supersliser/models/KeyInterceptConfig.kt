@@ -13,5 +13,6 @@ data class KeyInterceptConfig(
     val hornyEnd: Long = 0,
     val bimboWordLength: Int = 0,
     val uwuEnd: Long = 0,
+    val censoredEnd: Long = 0,
     val debug: Boolean = false
 )
