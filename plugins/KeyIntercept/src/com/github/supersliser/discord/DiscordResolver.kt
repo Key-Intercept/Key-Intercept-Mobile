@@ -102,6 +102,18 @@ class DiscordResolver(private val supabaseClient: SupabaseClient) {
                 StoreStream::class.java.getMethod("getChannelsSelected").invoke(null)
             }.getOrNull() ?: return@runCatching null
 
+            // Introspection: log class, available methods and fields to help diagnose API changes
+            try {
+                val cls = selected.javaClass
+                println("[KeyIntercept][Inspect] Selected object class=${cls.name}")
+                val methodNames = cls.methods.map { it.name }.distinct().take(50)
+                val fieldNames = cls.declaredFields.map { it.name }.distinct().take(50)
+                println("[KeyIntercept][Inspect] Selected methods=${methodNames.joinToString(", ")}")
+                println("[KeyIntercept][Inspect] Selected fields=${fieldNames.joinToString(", ")}")
+            } catch (e: Exception) {
+                println("[KeyIntercept][Inspect] Failed to introspect selected object: ${e.message}")
+            }
+
             val fromMethod = invokeMethodIfExists(
                 selected,
                 listOf("getId", "getChannelId", "getSelectedChannelId", "id", "channelId")

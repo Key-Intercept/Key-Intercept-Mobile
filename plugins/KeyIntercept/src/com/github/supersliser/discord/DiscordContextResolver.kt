@@ -22,6 +22,15 @@ class DiscordContextResolver(private val resolver: DiscordResolver) {
             if (channelId <= 0) {
                 val prev = runCatching { resolver.getPreviouslySentMessage() }.getOrNull()
                 if (prev != null) {
+                    try {
+                        println("[KeyIntercept][Inspect] Previous message class=${prev.javaClass.name}")
+                        val methods = prev.javaClass.methods.map { it.name }.distinct().take(50)
+                        val fields = prev.javaClass.declaredFields.map { it.name }.distinct().take(50)
+                        println("[KeyIntercept][Inspect] Prev methods=${methods.joinToString(", ")}")
+                        println("[KeyIntercept][Inspect] Prev fields=${fields.joinToString(", ")}")
+                    } catch (e: Exception) {
+                        println("[KeyIntercept][Inspect] Failed to introspect previous message: ${e.message}")
+                    }
                     val maybeChan = runCatching { resolver.invokeMethodIfExists(prev, listOf("getChannelId", "getChannel", "channelId")) }.getOrNull()
                     val chanFromPrev = runCatching { resolver.extractLongValues(maybeChan).firstOrNull() }.getOrNull() ?: -1L
                     if (chanFromPrev > 0) {
@@ -48,6 +57,14 @@ class DiscordContextResolver(private val resolver: DiscordResolver) {
                         channelName = extractStringValue(channelObj, listOf("name", "getName", "getChannelName")) ?: ""
                         serverId = resolver.extractLongValues(extractValue(channelObj, listOf("guild", "getGuild", "guildId", "getGuildId"))).firstOrNull() ?: -1L
                         println("[KeyIntercept][Whitelist] Channel object=${channelObj.javaClass.name} channelName='$channelName' serverId=$serverId")
+                        try {
+                            val cm = channelObj.javaClass.methods.map { it.name }.distinct().take(50)
+                            val cf = channelObj.javaClass.declaredFields.map { it.name }.distinct().take(50)
+                            println("[KeyIntercept][Inspect] Channel methods=${cm.joinToString(", ")}")
+                            println("[KeyIntercept][Inspect] Channel fields=${cf.joinToString(", ")}")
+                        } catch (e: Exception) {
+                            println("[KeyIntercept][Inspect] Failed to introspect channel object: ${e.message}")
+                        }
                     } else {
                         println("[KeyIntercept][Whitelist] Could not resolve channel object for id=$channelId")
                     }
@@ -62,12 +79,49 @@ class DiscordContextResolver(private val resolver: DiscordResolver) {
                         if (guildObj != null) {
                             serverName = extractStringValue(guildObj, listOf("name", "getName")) ?: ""
                             println("[KeyIntercept][Whitelist] Guild object=${guildObj.javaClass.name} serverName='$serverName'")
+                            try {
+                                val gm = guildObj.javaClass.methods.map { it.name }.distinct().take(50)
+                                val gf = guildObj.javaClass.declaredFields.map { it.name }.distinct().take(50)
+                                println("[KeyIntercept][Inspect] Guild methods=${gm.joinToString(", ")}")
+                                println("[KeyIntercept][Inspect] Guild fields=${gf.joinToString(", ")}")
+                            } catch (e: Exception) {
+                                println("[KeyIntercept][Inspect] Failed to introspect guild object: ${e.message}")
+                            }
                         } else {
                             println("[KeyIntercept][Whitelist] Could not resolve guild object for id=$serverId")
                         }
                     } catch (e: Exception) {
                         println("[KeyIntercept] Failed to resolve guild details for ID $serverId: ${e.message}")
                     }
+                }
+            }
+
+            // If we still don't have a server name or server id, force introspection of stores to surface API changes
+            if (serverName.isEmpty() && serverId <= 0) {
+                try {
+                    val channelsStore = com.discord.stores.StoreStream::class.java.getMethod("getChannels").invoke(null)
+                    if (channelsStore != null) {
+                        println("[KeyIntercept][Inspect] channelsStore class=${channelsStore.javaClass.name}")
+                        val cms = channelsStore.javaClass.methods.map { it.name }.distinct().take(50)
+                        val cfs = channelsStore.javaClass.declaredFields.map { it.name }.distinct().take(50)
+                        println("[KeyIntercept][Inspect] channelsStore methods=${cms.joinToString(", ")}")
+                        println("[KeyIntercept][Inspect] channelsStore fields=${cfs.joinToString(", ")}")
+                    }
+                } catch (e: Exception) {
+                    println("[KeyIntercept][Inspect] Failed to introspect channelsStore: ${e.message}")
+                }
+
+                try {
+                    val guildsStore = com.discord.stores.StoreStream::class.java.getMethod("getGuilds").invoke(null)
+                    if (guildsStore != null) {
+                        println("[KeyIntercept][Inspect] guildsStore class=${guildsStore.javaClass.name}")
+                        val gms = guildsStore.javaClass.methods.map { it.name }.distinct().take(50)
+                        val gfs = guildsStore.javaClass.declaredFields.map { it.name }.distinct().take(50)
+                        println("[KeyIntercept][Inspect] guildsStore methods=${gms.joinToString(", ")}")
+                        println("[KeyIntercept][Inspect] guildsStore fields=${gfs.joinToString(", ")}")
+                    }
+                } catch (e: Exception) {
+                    println("[KeyIntercept][Inspect] Failed to introspect guildsStore: ${e.message}")
                 }
             }
 
